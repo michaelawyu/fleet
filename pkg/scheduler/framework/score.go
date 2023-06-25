@@ -17,12 +17,21 @@ type ClusterScore struct {
 	// AffinityScore determines how much a binding would satisfy the affinity terms
 	// specified by the user.
 	AffinityScore int
+	// ActiveOrCreatingBindingScore reflects if there has already been an active/creating binding from
+	// the same cluster resource placement associated with the cluster; it value range should
+	// be [0, 1], where 1 signals that an active/creating binding is present.
+	//
+	// Note that this score is for internal usage only; it serves the purpose of implementing
+	// a preference for already selected clusters when all the other conditions are the same,
+	// so as to minimize interruption between different scheduling runs.
+	ActiveOrCreatingBindingScore int
 }
 
 // Add adds a ClusterScore to another ClusterScore.
-func (s1 *ClusterScore) Add(s2 ClusterScore) {
+func (s1 *ClusterScore) Add(s2 *ClusterScore) {
 	s1.TopologySpreadScore += s2.TopologySpreadScore
 	s1.AffinityScore += s2.AffinityScore
+	s1.ActiveOrCreatingBindingScore += s2.ActiveOrCreatingBindingScore
 }
 
 // Less returns true if a ClusterScore is less than another.
@@ -31,7 +40,11 @@ func (s1 *ClusterScore) Less(s2 *ClusterScore) bool {
 		return s1.TopologySpreadScore < s2.TopologySpreadScore
 	}
 
-	return s1.AffinityScore < s2.AffinityScore
+	if s1.AffinityScore != s2.AffinityScore {
+		return s1.AffinityScore < s2.AffinityScore
+	}
+
+	return s1.ActiveOrCreatingBindingScore < s2.ActiveOrCreatingBindingScore
 }
 
 // ScoredCluster is a cluster with a score.

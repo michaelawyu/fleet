@@ -10,6 +10,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+const (
+	// SchedulerCleanupFinalizer is a finalizer added by the scheduler to all bindings, to make sure
+	// that the scheduler can react to binding deletions if necessary.
+	SchedulerCleanupFinalizer = fleetPrefix + "scheduler-cleanup"
+)
+
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:scope=Cluster,categories={fleet},shortName=rb
 // +kubebuilder:subresource:status
@@ -44,6 +50,9 @@ type ResourceBindingSpec struct {
 
 	// TargetCluster is the name of the cluster that the scheduler assigns the resources to.
 	TargetCluster string `json:"targetCluster"`
+
+	// ClusterDecision explains why the scheduler makes this binding.
+	ClusterDecision ClusterDecision `json:"clusterDecision"`
 }
 
 // BindingState is the state of the binding
