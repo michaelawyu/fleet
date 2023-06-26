@@ -89,6 +89,12 @@ spec:
                 - reason
                 - selected
                 type: object
+              policySnapshotName:
+                description: PolicySnapshtName is the name of the scheduling policy
+                  snapshot that this resource binding points to; more specifically,
+                  the scheduler creates this bindings in accordance with this scheduling
+                  policy snapshot.
+                type: string
               resourceSnapshotName:
                 description: ResourceSnapshotName is the name of the resource snapshot
                   that this resource binding points to. If the resources are divided
@@ -105,6 +111,7 @@ spec:
                 type: string
             required:
             - clusterDecision
+            - policySnapshotName
             - resourceSnapshotName
             - state
             - targetCluster

@@ -43,10 +43,8 @@ const (
 	maxClusterDecisionCount = 20
 
 	// The reasons and messages for scheduled conditions.
-	fullyScheduledReason     = "SchedulingCompleted"
-	fullyScheduledMessage    = "all required number of bindings have been created"
-	notFullyScheduledReason  = "Pendingscheduling"
-	notFullyScheduledMessage = "might not have enough bindings created"
+	fullyScheduledReason  = "SchedulingCompleted"
+	fullyScheduledMessage = "all required number of bindings have been created"
 
 	// pickedByHighestScoreReason is the reason to use for scheduling decision when a cluster is picked as
 	// it has a highest score.
@@ -187,12 +185,10 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 		klog.V(2).InfoS("Scheduling cycle ends", "schedulingPolicySnapshot", schedulingPolicySnapshotRef, "latency", latency)
 	}()
 
-	errorMessage := "failed to run scheduling cycle"
-
 	// Retrieve the desired number of clusters from the policy.
 	numOfClusters, err := utils.ExtractNumOfClustersFromPolicySnapshot(policy)
 	if err != nil {
-		klog.ErrorS(err, errorMessage, schedulingPolicySnapshotRef)
+		klog.ErrorS(err, "failed to extract number of clusters required from policy snapshot", "schedulingPolicySnapshot", schedulingPolicySnapshotRef)
 		return ctrl.Result{}, err
 	}
 
@@ -203,7 +199,7 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 	// changes eventually.
 	clusters, err := f.collectClusters(ctx)
 	if err != nil {
-		klog.ErrorS(err, errorMessage, schedulingPolicySnapshotRef)
+		klog.ErrorS(err, "failed to collect clusters", "schedulingPolicySnapshot", schedulingPolicySnapshotRef)
 		return ctrl.Result{}, err
 	}
 
@@ -222,7 +218,7 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 	// TO-DO (chenyu1): explore the possbilities of using a mutation cache for better performance.
 	bindings, err := f.collectBindings(ctx, crpName)
 	if err != nil {
-		klog.ErrorS(err, errorMessage, schedulingPolicySnapshotRef)
+		klog.ErrorS(err, "failed to collect bindings", "schedulingPolicySnapshot", schedulingPolicySnapshotRef)
 		return ctrl.Result{}, err
 	}
 
@@ -232,45 +228,67 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 	//   have been cleared for processing by the dispatcher; and
 	// * creating bindings, i.e., bindings that have been associated with a normally operating cluster,
 	//   but have not yet been cleared for processing by the dispatcher; and
-	// * obsolete bindings, i.e., bindings that are no longer associated with a normally operating
-	//   cluster, but have not yet been marked as deleting by the scheduler; and
+	// * obsolete bindings, i.e., bindings that are scheduled in accordance with an out-of-date
+	//   (i.e., no longer active) scheduling policy snapshot; it may or may have been cleared for
+	//   processing by the dispatcher; and
+	// * dangling bindings, i.e., bindings that are associated with a cluster that is no longer
+	//   in a normally operating state (the cluster has left the fleet, or is in the state of leaving),
+	//   yet has not been marked as deleting by the scheduler; and
 	// * deleted bindings, i.e, bindings that are marked for deletion in the API server, but have not
 	//   yet been marked as deleting by the scheduler.
 	//
-	// Note that deleting bindings without the scheduler finalizer are ignored by the scheduler, as they
+	// Note that bindings marked as deleting are ignored by the scheduler (unless they are already marked
+	// for deletion and still has the scheduler cleanup finalizer), as they
 	// are irrelevant to the scheduling cycle.
-	active, creating, obsolete, deleted := classifyBindings(bindings, clusters)
+	active, creating, obsolete, dangling, deleted := classifyBindings(policy, bindings, clusters)
 
 	// If a binding has been marked for deletion yet still has the scheduler cleanup finalizer,
 	// remove the finalizer from it to clear it for GC.
 	if err := f.removeSchedulerCleanupFinalizerFrom(ctx, deleted); err != nil {
-		klog.ErrorS(err, errorMessage, schedulingPolicySnapshotRef)
+		klog.ErrorS(err, "failed to remove scheduler cleanup finalizer from deleted bindings", "schedulingPolicySnapshot", schedulingPolicySnapshotRef)
 		return ctrl.Result{}, err
 	}
 
-	// Mark all obsolete bindings as deleting.
-	if err := f.markAsDeletingFor(ctx, obsolete); err != nil {
-		klog.ErrorS(err, errorMessage, schedulingPolicySnapshotRef)
+	// Mark all dangling bindings as deleting.
+	if err := f.markAsDeletingFor(ctx, dangling); err != nil {
+		klog.ErrorS(err, "failed to mark dangling bindings as deleting", "schedulingPolicySnapshot", schedulingPolicySnapshotRef)
 		return ctrl.Result{}, err
 	}
 
-	// Check if the scheduler should downscale, i.e., mark some creating/active bindings as deleting.
+	// Check if the scheduler should downscale, i.e., mark some creating/active bindings as deleting and/or
+	// clean up all obsolete bindings right away.
 	//
-	// Note that the scheduler will only downscale when
+	// Normally obsolete bindings are kept for cross-referencing at the end of the scheduling cycle to minimize
+	// interruptions caused by scheduling policy change; however, in the case of downscaling, they can be removed
+	// right away.
+	//
+	// To summarize, the scheduler will only downscale when
 	//
 	// * the scheduling policy is of the PickN type; and
 	// * currently there are too many selected clusters, or more specifically too many creating and active bindings
+	//   in the system; or there are exactly the right number of selected clusters, but some obsolete bindings still linger
 	//   in the system.
-	act, downscaleCount := shouldDownscale(policy, numOfClusters, len(active)+len(creating))
+	act, downscaleCount := shouldDownscale(policy, numOfClusters, len(active)+len(creating), len(obsolete))
 
 	// Downscale if needed.
 	//
-	// To minimize interruptions, the scheduler picks creating bindings first (in any order); if there are still more
-	// bindings to trim, the scheduler prefers ones with smaller CreationTimestamps.
+	// To minimize interruptions, the scheduler picks creating bindings first, and then
+	// active bindings; when processing active bindings, the logic prioritizes older bindings, i.e., bindings with
+	// smaller CreationTimestamp (assuming monotonic clock in the system).
+	//
+	// This step will also mark all obsolete bindings (if any) as deleting right away.
 	if act {
+		klog.V(2).InfoS("Downscaling is needed", "schedulingPolicySnapshot", schedulingPolicySnapshotRef, "downscaleCount", downscaleCount)
+		// Mark all obsolete bindings as deleting first.
+		if err := f.markAsDeletingFor(ctx, obsolete); err != nil {
+			klog.ErrorS(err, "failed to mark obsolete bindings as deleting", "schedulingPolicySnapshot", schedulingPolicySnapshotRef)
+			return ctrl.Result{}, err
+		}
+
+		// Perform actual downscaling; this will be skipped if the downscale count is zero.
 		active, creating, err = f.downscale(ctx, active, creating, downscaleCount)
 		if err != nil {
-			klog.ErrorS(err, errorMessage, schedulingPolicySnapshotRef)
+			klog.ErrorS(err, "failed to downscale", "schedulingPolicySnapshot", schedulingPolicySnapshotRef)
 			return ctrl.Result{}, err
 		}
 
@@ -281,13 +299,12 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 		// In the case of downscaling, the scheduler considers the policy to be fully scheduled.
 		newSchedulingCondition := fullyScheduledCondition(policy)
 
-		// Update the policy snapshot status; since a downscaling has occurred, this update is always requied, hence
-		// no sameness (no change) checks are necessary.
+		// Update the policy snapshot status.
 		//
 		// Note that the op would fail if the policy snapshot is not the latest, so that consistency is
 		// preserved.
 		if err := f.updatePolicySnapshotStatus(ctx, policy, refreshedSchedulingDecisions, newSchedulingCondition); err != nil {
-			klog.ErrorS(err, errorMessage, schedulingPolicySnapshotRef)
+			klog.ErrorS(err, "failed to update policy snapshot status during downscaling", "schedulingPolicySnapshot", schedulingPolicySnapshotRef)
 			return ctrl.Result{}, err
 		}
 
@@ -295,20 +312,15 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 		return ctrl.Result{}, nil
 	}
 
-	// If no downscaling is needed, update the policy snapshot status any way.
-	//
-	// This is needed as a number of situations (e.g., POST/PUT failures) may lead to inconsistencies between
-	// the decisions added to the policy snapshot status and the actual list of bindings.
-
-	// Collect current decisions and conditions for sameness (no change) checks.
-	currentSchedulingDecisions := policy.Status.ClusterDecisions
-	currentSchedulingCondition := meta.FindStatusCondition(policy.Status.Conditions, string(fleetv1beta1.PolicySnapshotScheduled))
-
 	// Check if the scheduler needs to take action; a scheduling cycle is only needed if
 	// * the policy is of the PickAll type; or
 	// * the policy is of the PickN type, and currently there are not enough number of bindings.
 	if !shouldSchedule(policy, numOfClusters, len(active)+len(creating)) {
 		// No action is needed; however, a status refresh might be warranted.
+		//
+		// This is needed as a number of situations (e.g., POST/PUT failures) may lead to inconsistencies between
+		// the decisions added to the policy snapshot status and the actual list of bindings.
+		klog.V(2).InfoS("No scheduling is needed", "schedulingPolicySnapshot", schedulingPolicySnapshotRef)
 
 		// Refresh scheduling decisions.
 		refreshedSchedulingDecisions := refreshSchedulingDecisionsFrom(policy, active, creating)
@@ -317,45 +329,21 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 		// In this case, since no action is needed, the scheduler considers the policy to be fully scheduled.
 		newSchedulingCondition := fullyScheduledCondition(policy)
 
-		// Check if a refresh is warranted; the scheduler only update the status when there is a change in
-		// scheduling decisions and/or the scheduling condition.
-		if !equalDecisions(currentSchedulingDecisions, refreshedSchedulingDecisions) || !condition.EqualCondition(currentSchedulingCondition, &newSchedulingCondition) {
-			// Update the policy snapshot status.
-			//
-			// Note that the op would fail if the policy snapshot is not the latest, so that consistency is
-			// preserved.
-			if err := f.updatePolicySnapshotStatus(ctx, policy, refreshedSchedulingDecisions, newSchedulingCondition); err != nil {
-				klog.ErrorS(err, errorMessage, schedulingPolicySnapshotRef)
-				return ctrl.Result{}, err
-			}
+		// Update the policy snapshot status.
+		//
+		// Note that the op would fail if the policy snapshot is not the latest, so that consistency is
+		// preserved.
+		if err := f.updatePolicySnapshotStatus(ctx, policy, refreshedSchedulingDecisions, newSchedulingCondition); err != nil {
+			klog.ErrorS(err, "failed to update policy snapshot status (no scheduling needed)", "schedulingPolicySnapshot", schedulingPolicySnapshotRef)
+			return ctrl.Result{}, err
 		}
 
 		// Return immediate as there no more bindings for the scheduler to schedule at this moment.
 		return ctrl.Result{}, nil
 	}
 
-	// The scheduler needs to take action; refresh the status first.
-
-	// Refresh scheduling decisions.
-	refreshedSchedulingDecisions := refreshSchedulingDecisionsFrom(policy, active, creating)
-	// Prepare new scheduling condition.
-	//
-	// In this case, since action is needed, the scheduler marks the policy as not fully scheduled.
-	newSchedulingCondition := notFullyScheduledCondition(policy, numOfClusters)
-	// Check if a refresh is warranted; the scheduler only update the status when there is a change in
-	// scheduling decisions and/or the scheduling condition.
-	if !equalDecisions(currentSchedulingDecisions, refreshedSchedulingDecisions) || !condition.EqualCondition(currentSchedulingCondition, &newSchedulingCondition) {
-		// Update the policy snapshot status.
-		//
-		// Note that the op would fail if the policy snapshot is not the latest, so that consistency is
-		// preserved.
-		if err := f.updatePolicySnapshotStatus(ctx, policy, refreshedSchedulingDecisions, newSchedulingCondition); err != nil {
-			klog.ErrorS(err, errorMessage, schedulingPolicySnapshotRef)
-			return ctrl.Result{}, err
-		}
-	}
-
-	// Enter the actual scheduling stages.
+	// The scheduler needs to take action; enter the actual scheduling stages.
+	klog.V(2).InfoS("Scheduling is needed; entering scheduling stages", "schedulingPolicySnapshot", schedulingPolicySnapshotRef)
 
 	// Prepare the cycle state for this run.
 	//
@@ -365,13 +353,15 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 	state := NewCycleState()
 
 	// Calculate the batch size.
+	//
+	// Note that obsolete bindings are not counted.
 	state.desiredBatchSize = int(*policy.Spec.Policy.NumberOfClusters) - len(active) - len(creating)
 
 	// An earlier check guarantees that the desired batch size is always positive; however, the scheduler still
 	// performs a sanity check here; normally this branch will never run.
 	if state.desiredBatchSize <= 0 {
 		err = fmt.Errorf("desired batch size is below zero: %d", state.desiredBatchSize)
-		klog.ErrorS(err, errorMessage, schedulingPolicySnapshotRef)
+		klog.ErrorS(err, "failed to calculate desired batch size", "schedulingPolicySnapshot", schedulingPolicySnapshotRef)
 		return ctrl.Result{}, controller.NewUnexpectedBehaviorError(err)
 	}
 
@@ -383,7 +373,7 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 	// Note that any failure would lead to the cancellation of the scheduling cycle.
 	batchSizeLimit, status := f.runPostBatchPlugins(ctx, state, policy)
 	if status.IsInteralError() {
-		klog.ErrorS(status.AsError(), errorMessage, schedulingPolicySnapshotRef)
+		klog.ErrorS(status.AsError(), "failed to run post batch plugins", "schedulingPolicySnapshot", schedulingPolicySnapshotRef)
 		return ctrl.Result{}, controller.NewUnexpectedBehaviorError(status.AsError())
 	}
 
@@ -391,7 +381,7 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 	// the batch size limit is never greater than the desired batch size.
 	if batchSizeLimit > state.desiredBatchSize {
 		err := fmt.Errorf("batch size limit is greater than desired batch size: %d > %d", batchSizeLimit, state.desiredBatchSize)
-		klog.ErrorS(err, errorMessage, schedulingPolicySnapshotRef)
+		klog.ErrorS(err, "failed to set batch size limit", "schedulingPolicySnapshot", schedulingPolicySnapshotRef)
 		return ctrl.Result{}, controller.NewUnexpectedBehaviorError(err)
 	}
 	state.batchSizeLimit = batchSizeLimit
@@ -405,7 +395,7 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 	//
 	// Note that any failure would lead to the cancellation of the scheduling cycle.
 	if status := f.runPreFilterPlugins(ctx, state, policy); status.IsInteralError() {
-		klog.ErrorS(status.AsError(), errorMessage, schedulingPolicySnapshotRef)
+		klog.ErrorS(status.AsError(), "failed to run pre filter plugins", "schedulingPolicySnapshot", schedulingPolicySnapshotRef)
 		return ctrl.Result{}, controller.NewUnexpectedBehaviorError(status.AsError())
 	}
 
@@ -416,18 +406,15 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 	// are inspected in parallel.
 	//
 	// Note that any failure would lead to the cancellation of the scheduling cycle.
-	//
-	// TO-DO (chenyu1): assign variables when the implementation is ready.
-	passed, _, err := f.runFilterPlugins(ctx, state, policy, clusters)
+	passed, filtered, err := f.runFilterPlugins(ctx, state, policy, clusters)
 	if err != nil {
-		klog.ErrorS(err, errorMessage, schedulingPolicySnapshotRef)
+		klog.ErrorS(err, "failed to run filter plugins", "schedulingPolicySnapshot", schedulingPolicySnapshotRef)
 		return ctrl.Result{}, controller.NewUnexpectedBehaviorError(err)
 	}
 
 	// Run pre-score plugins.
-	klog.V(4).InfoS("Running pre-score plugins", "policy", schedulingPolicySnapshotRef)
 	if status := f.runPreScorePlugins(ctx, state, policy); status.IsInteralError() {
-		klog.ErrorS(status.AsError(), errorMessage, schedulingPolicySnapshotRef)
+		klog.ErrorS(status.AsError(), "failed ro run pre-score plugins", "schedulingPolicySnapshot", schedulingPolicySnapshotRef)
 		return ctrl.Result{}, controller.NewUnexpectedBehaviorError(status.AsError())
 	}
 
@@ -438,10 +425,9 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 	//
 	// Note that at this moment, since no normalization is needed, the addition is performed directly at this step;
 	// when need for normalization materializes, this step should return a list of scores per cluster per plugin instead.
-	klog.V(4).InfoS("Running score plugins", "policy", schedulingPolicySnapshotRef)
 	scoredClusters, err := f.runScorePlugins(ctx, state, policy, passed)
 	if err != nil {
-		klog.ErrorS(err, errorMessage, schedulingPolicySnapshotRef)
+		klog.ErrorS(err, "failed to run score plugins", "schedulingPolicySnapshot", schedulingPolicySnapshotRef)
 		return ctrl.Result{}, controller.NewUnexpectedBehaviorError(err)
 	}
 
@@ -456,7 +442,7 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 	// scored clusters.
 	if numOfClustersToPick > len(scoredClusters) {
 		err := fmt.Errorf("number of clusters to pick is greater than number of scored clusters: %d > %d", numOfClustersToPick, len(scoredClusters))
-		klog.ErrorS(err, errorMessage, schedulingPolicySnapshotRef)
+		klog.ErrorS(err, "failed to calculate number of clusters to pick", "schedulingPolicySnapshot", schedulingPolicySnapshotRef)
 		return ctrl.Result{}, controller.NewUnexpectedBehaviorError(err)
 	}
 
@@ -472,16 +458,19 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 	//   in the current run with the latest score;
 	// * bindings that should be deleted, i.e., mark a binding as deleting if its target cluster is no
 	//   longer picked in the current run.
+	// * bindings that require no change; such bindings are already created/updated with the latest
+	//   scheduling policy.
 	//
 	// Fields in the returned bindings are fulfilled and/or refreshed as applicable.
-	toCreate, toUpdate, toDelete, err := crossReferencePickedCustersAndBindings(crpName, policy, picked, active, creating)
+	klog.V(2).InfoS("Cross-referencing bindings with picked clusters", "schedulingPolicySnapshot", schedulingPolicySnapshotRef)
+	toCreate, toUpdate, toDelete, toRemain, err := crossReferencePickedCustersAndBindings(crpName, policy, picked, active, creating, obsolete)
 
 	// Manipulate bindings accordingly.
 	klog.V(2).InfoS("Creating, updating, and/or deleting bindings", "policy", schedulingPolicySnapshotRef)
 
 	// Create new bindings.
 	if err := f.createBindings(ctx, toCreate); err != nil {
-		klog.ErrorS(err, errorMessage, schedulingPolicySnapshotRef)
+		klog.ErrorS(err, "Failed to create new bindings", "schedulingPolicySnapshot", schedulingPolicySnapshotRef)
 		return ctrl.Result{}, err
 	}
 
@@ -490,7 +479,7 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 	// Note that a race condition may arise here, when a rollout controller attempts to update bindings
 	// at the same time with the scheduler. An error induced requeue will happen in this case.
 	if err := f.updateBindings(ctx, toUpdate); err != nil {
-		klog.ErrorS(err, errorMessage, schedulingPolicySnapshotRef)
+		klog.ErrorS(err, "Failed to update old bindings", "schedulingPolicySnapshot", schedulingPolicySnapshotRef)
 		return ctrl.Result{}, err
 	}
 
@@ -499,7 +488,25 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 	// Note that a race condition may arise here, when a rollout controller attempts to update bindings
 	// at the same time with the scheduler. An error induced requeue will happen in this case.
 	if err := f.markAsDeletingFor(ctx, toDelete); err != nil {
-		klog.ErrorS(err, errorMessage, schedulingPolicySnapshotRef)
+		klog.ErrorS(err, "failed to mark bindings as deleting", "schedulingPolicySnapshot", schedulingPolicySnapshotRef)
+		return ctrl.Result{}, err
+	}
+
+	// Update the policy snapshot status to reflect the latest decisions made in this scheduling cycle.
+
+	// Refresh scheduling decisions.
+	refreshedSchedulingDecisions := newSchedulingDecisionsFrom(filtered, toCreate, toUpdate, toRemain)
+	// Prepare new scheduling condition.
+	//
+	// In the case of downscaling, the scheduler considers the policy to be fully scheduled.
+	newSchedulingCondition := fullyScheduledCondition(policy)
+
+	// Update the policy snapshot status.
+	//
+	// Note that the op would fail if the policy snapshot is not the latest, so that consistency is
+	// preserved.
+	if err := f.updatePolicySnapshotStatus(ctx, policy, refreshedSchedulingDecisions, newSchedulingCondition); err != nil {
+		klog.ErrorS(err, "failed to update policy snapshot status (scheduling cycle completed)", "schedulingPolicySnapshot", schedulingPolicySnapshotRef)
 		return ctrl.Result{}, err
 	}
 
@@ -518,6 +525,8 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 			RequeueAfter: requeueDelay,
 		}, nil
 	}
+
+	// The scheduling cycle has completed.
 	return ctrl.Result{}, nil
 }
 
@@ -599,15 +608,24 @@ func (s sortByCreationTimestampBindings) Less(i, j int) bool {
 // To minimize interruptions, the scheduler picks creating bindings first (in any order); if there are still more
 // bindings to trim, the scheduler prefers ones with smaller CreationTimestamps.
 func (f *framework) downscale(ctx context.Context, active, creating []*fleetv1beta1.ClusterResourceBinding, count int) (updatedActive, updatedCreating []*fleetv1beta1.ClusterResourceBinding, err error) {
-	if count <= len(creating) {
-		// Trimming creating bindings would suffice.
-		bindingsToDelete := creating[:count]
+	if count == 0 {
+		// Skip if the downscale count is zero.
+		return active, creating, nil
+	}
+
+	// Trim creating bindings.
+	bindingsToDelete := make([]*fleetv1beta1.ClusterResourceBinding, 0, count)
+	for i := 0; i < len(creating) && i < count; i++ {
+		binding := creating[i]
+		bindingsToDelete = append(bindingsToDelete, binding)
+	}
+
+	if len(bindingsToDelete) == count {
+		// Trimming creating bindings alone would suffice.
 		return active, creating[count:], f.markAsDeletingFor(ctx, bindingsToDelete)
 	}
 
-	// Trim all creating bindings.
-	bindingsToDelete := make([]*fleetv1beta1.ClusterResourceBinding, 0, count)
-	bindingsToDelete = append(bindingsToDelete, creating...)
+	// Trimming obsolete and creating bindings alone is not enough, move on to active bindings.
 
 	// Sort the bindings by their CreationTimestamps.
 	sorted := sortByCreationTimestampBindings(active)
@@ -626,11 +644,21 @@ func (f *framework) downscale(ctx context.Context, active, creating []*fleetv1be
 
 // updatePolicySnapshotStatus updates the status of a policy snapshot, setting new scheduling decisions
 // and condition on the object.
-func (f *framework) updatePolicySnapshotStatus(ctx context.Context, policy *fleetv1beta1.ClusterPolicySnapshot, decisions []fleetv1beta1.ClusterDecision, condition metav1.Condition) error {
+//
+// This function will perform a sameness (no change) check, and skip the update if there is no change
+// in the decisions and the condition.
+func (f *framework) updatePolicySnapshotStatus(ctx context.Context, policy *fleetv1beta1.ClusterPolicySnapshot, newDecisions []fleetv1beta1.ClusterDecision, newCondition metav1.Condition) error {
 	errorFormat := "failed to update policy snapshot status: %w"
 
-	policy.Status.ClusterDecisions = decisions
-	meta.SetStatusCondition(&policy.Status.Conditions, condition)
+	currentDecisions := policy.Status.ClusterDecisions
+	currentCondition := meta.FindStatusCondition(policy.Status.Conditions, string(fleetv1beta1.PolicySnapshotScheduled))
+	if equalDecisions(currentDecisions, newDecisions) && condition.EqualCondition(currentCondition, &newCondition) {
+		// Skip if there is no change in decisions and conditions.
+		return nil
+	}
+
+	policy.Status.ClusterDecisions = newDecisions
+	meta.SetStatusCondition(&policy.Status.Conditions, newCondition)
 	if err := f.client.Status().Update(ctx, policy, &client.UpdateOptions{}); err != nil {
 		return controller.NewAPIServerError(fmt.Errorf(errorFormat, err))
 	}

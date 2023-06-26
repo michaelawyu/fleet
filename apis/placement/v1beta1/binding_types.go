@@ -48,6 +48,11 @@ type ResourceBindingSpec struct {
 	// it points to the name of the leading snapshot of the index group.
 	ResourceSnapshotName string `json:"resourceSnapshotName"`
 
+	// PolicySnapshtName is the name of the scheduling policy snapshot that this resource binding
+	// points to; more specifically, the scheduler creates this bindings in accordance with this
+	// scheduling policy snapshot.
+	PolicySnapshotName string `json:"policySnapshotName"`
+
 	// TargetCluster is the name of the cluster that the scheduler assigns the resources to.
 	TargetCluster string `json:"targetCluster"`
 

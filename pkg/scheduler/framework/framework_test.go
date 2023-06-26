@@ -30,6 +30,7 @@ import (
 const (
 	CRPName        = "test-placement"
 	policyName     = "test-policy"
+	altPolicyName  = "another-test-policy"
 	bindingName    = "test-binding"
 	altBindingName = "another-test-binding"
 	clusterName    = "bravelion"
@@ -142,6 +143,12 @@ func TestCollectBindings(t *testing.T) {
 func TestClassifyBindings(t *testing.T) {
 	now := metav1.Now()
 
+	policy := &fleetv1beta1.ClusterPolicySnapshot{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: policyName,
+		},
+	}
+
 	clusterName1 := "cluster-1"
 	clusterName2 := "cluster-2"
 	clusterName3 := "cluster-3"
@@ -202,8 +209,9 @@ func TestClassifyBindings(t *testing.T) {
 			Name: "binding-4",
 		},
 		Spec: fleetv1beta1.ResourceBindingSpec{
-			State:         fleetv1beta1.BindingStateActive,
-			TargetCluster: clusterName3,
+			State:              fleetv1beta1.BindingStateActive,
+			TargetCluster:      clusterName3,
+			PolicySnapshotName: altPolicyName,
 		},
 	}
 	assocaitedWithDisappearedClusterBinding := fleetv1beta1.ClusterResourceBinding{
@@ -211,26 +219,39 @@ func TestClassifyBindings(t *testing.T) {
 			Name: "binding-5",
 		},
 		Spec: fleetv1beta1.ResourceBindingSpec{
-			State:         fleetv1beta1.BindingStateCreating,
-			TargetCluster: clusterName4,
+			State:              fleetv1beta1.BindingStateCreating,
+			TargetCluster:      clusterName4,
+			PolicySnapshotName: policyName,
 		},
 	}
-	activeBinding := fleetv1beta1.ClusterResourceBinding{
+	obsoleteBinding := fleetv1beta1.ClusterResourceBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "binding-6",
 		},
 		Spec: fleetv1beta1.ResourceBindingSpec{
-			State:         fleetv1beta1.BindingStateActive,
-			TargetCluster: clusterName1,
+			State:              fleetv1beta1.BindingStateActive,
+			TargetCluster:      clusterName1,
+			PolicySnapshotName: altPolicyName,
 		},
 	}
-	creatingBinding := fleetv1beta1.ClusterResourceBinding{
+	activeBinding := fleetv1beta1.ClusterResourceBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "binding-7",
 		},
 		Spec: fleetv1beta1.ResourceBindingSpec{
-			State:         fleetv1beta1.BindingStateCreating,
-			TargetCluster: clusterName2,
+			State:              fleetv1beta1.BindingStateActive,
+			TargetCluster:      clusterName1,
+			PolicySnapshotName: policyName,
+		},
+	}
+	creatingBinding := fleetv1beta1.ClusterResourceBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "binding-8",
+		},
+		Spec: fleetv1beta1.ResourceBindingSpec{
+			State:              fleetv1beta1.BindingStateCreating,
+			TargetCluster:      clusterName2,
+			PolicySnapshotName: policyName,
 		},
 	}
 
@@ -240,15 +261,17 @@ func TestClassifyBindings(t *testing.T) {
 		deletingBinding,
 		associatedWithLeavingClusterBinding,
 		assocaitedWithDisappearedClusterBinding,
+		obsoleteBinding,
 		activeBinding,
 		creatingBinding,
 	}
 	wantActive := []*fleetv1beta1.ClusterResourceBinding{&activeBinding}
 	wantCreating := []*fleetv1beta1.ClusterResourceBinding{&creatingBinding}
+	wantObsolete := []*fleetv1beta1.ClusterResourceBinding{&obsoleteBinding}
 	wantDeleted := []*fleetv1beta1.ClusterResourceBinding{&markedForDeletionWithFinalizerBinding}
-	wantObsolete := []*fleetv1beta1.ClusterResourceBinding{&associatedWithLeavingClusterBinding, &assocaitedWithDisappearedClusterBinding}
+	wantDangling := []*fleetv1beta1.ClusterResourceBinding{&associatedWithLeavingClusterBinding, &assocaitedWithDisappearedClusterBinding}
 
-	active, creating, obsolete, deleted := classifyBindings(bindings, clusters)
+	active, creating, obsolete, dangling, deleted := classifyBindings(policy, bindings, clusters)
 	if !cmp.Equal(active, wantActive) {
 		t.Errorf("classifyBindings() active = %v, want %v", active, wantActive)
 	}
@@ -259,6 +282,10 @@ func TestClassifyBindings(t *testing.T) {
 
 	if !cmp.Equal(obsolete, wantObsolete) {
 		t.Errorf("classifyBindings() obsolete = %v, want %v", obsolete, wantObsolete)
+	}
+
+	if !cmp.Equal(dangling, wantDangling) {
+		t.Errorf("classifyBindings() dangling = %v, want %v", dangling, wantDangling)
 	}
 
 	if !cmp.Equal(deleted, wantDeleted) {
@@ -307,6 +334,7 @@ func TestShouldDownscale(t *testing.T) {
 		policy    *fleetv1beta1.ClusterPolicySnapshot
 		desired   int
 		present   int
+		obsolete  int
 		wantAct   bool
 		wantCount int
 	}{
@@ -355,11 +383,29 @@ func TestShouldDownscale(t *testing.T) {
 			wantAct:   true,
 			wantCount: 1,
 		},
+		{
+			name: "should downscale (obsolete bindings)",
+			policy: &fleetv1beta1.ClusterPolicySnapshot{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: policyName,
+				},
+				Spec: fleetv1beta1.SchedulingPolicySnapshotSpec{
+					Policy: &fleetv1beta1.PlacementPolicy{
+						PlacementType: fleetv1beta1.PickNPlacementType,
+					},
+				},
+			},
+			desired:   1,
+			present:   1,
+			obsolete:  1,
+			wantAct:   true,
+			wantCount: 0,
+		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			act, count := shouldDownscale(tc.policy, tc.desired, tc.present)
+			act, count := shouldDownscale(tc.policy, tc.desired, tc.present, tc.obsolete)
 			if act != tc.wantAct || count != tc.wantCount {
 				t.Fatalf("shouldDownscale() = %v, %v, want %v, %v", act, count, tc.wantAct, tc.wantCount)
 			}

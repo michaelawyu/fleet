@@ -25,15 +25,19 @@ import (
 //     have been cleared for processing by the dispatcher; and
 //   - creating bindings, i.e., bindings that have been associated with a normally operating cluster,
 //     but have not yet been cleared for processing by the dispatcher; and
-//   - obsolete bindings, i.e., bindings that are no longer associated with a normally operating
-//     cluster, but have not yet been marked as deleting by the scheduler; and
+//   - dangling bindings, i.e., bindings that are associated with a cluster that is no longer in
+//     a normally operating state (the cluster has left the fleet, or is in the state of leaving),
+//     yet has not been marked as deleting by the scheduler; and
+//   - obsolete bindings, i.e., bindings that are no longer associated with the latest scheduling
+//     policy; and
 //   - deleted bindings, i.e, bindings that are marked for deletion in the API server, but have not
 //     yet been marked as deleting by the scheduler.
-func classifyBindings(bindings []fleetv1beta1.ClusterResourceBinding, clusters []fleetv1beta1.MemberCluster) (active, creating, obsolete, deleted []*fleetv1beta1.ClusterResourceBinding) {
+func classifyBindings(policy *fleetv1beta1.ClusterPolicySnapshot, bindings []fleetv1beta1.ClusterResourceBinding, clusters []fleetv1beta1.MemberCluster) (active, creating, obsolete, dangling, deleted []*fleetv1beta1.ClusterResourceBinding) {
 	// Pre-allocate arrays.
 	active = make([]*fleetv1beta1.ClusterResourceBinding, 0, len(bindings))
 	creating = make([]*fleetv1beta1.ClusterResourceBinding, 0, len(bindings))
 	obsolete = make([]*fleetv1beta1.ClusterResourceBinding, 0, len(bindings))
+	dangling = make([]*fleetv1beta1.ClusterResourceBinding, 0, len(bindings))
 	deleted = make([]*fleetv1beta1.ClusterResourceBinding, 0, len(bindings))
 
 	// Build a map for clusters for quick loopup.
@@ -47,9 +51,12 @@ func classifyBindings(bindings []fleetv1beta1.ClusterResourceBinding, clusters [
 		targetCluster, isTargetClusterPresent := clusterMap[binding.Spec.TargetCluster]
 
 		switch {
-		case binding.DeletionTimestamp != nil && controllerutil.ContainsFinalizer(&binding, fleetv1beta1.SchedulerCleanupFinalizer):
+		case binding.DeletionTimestamp != nil:
 			// Check if the binding has been deleted, but still has the scheduler cleanup finalizer in presence.
-			deleted = append(deleted, &binding)
+			if controllerutil.ContainsFinalizer(&binding, fleetv1beta1.SchedulerCleanupFinalizer) {
+				deleted = append(deleted, &binding)
+			}
+			// Ignore any binding that has been deleted, and has no scheduler cleanup finalizer in presence.
 		case binding.Spec.State == fleetv1beta1.BindingStateDeleting:
 			// Ignore any binding that is of the deleting state.
 		case !isTargetClusterPresent || targetCluster.Spec.State == fleetv1beta1.ClusterStateLeave:
@@ -58,6 +65,9 @@ func classifyBindings(bindings []fleetv1beta1.ClusterResourceBinding, clusters [
 			//
 			// Note that this check is solely for the purpose of detecting a situation where bindings are stranded
 			// on a leaving/left cluster; it does not perform any binding association eligibility check for the cluster.
+			dangling = append(dangling, &binding)
+		case binding.Spec.PolicySnapshotName != policy.Name:
+			// The binding is in the creating or active state, but is no longer associated with the latest scheduling policy snapshot.
 			obsolete = append(obsolete, &binding)
 		case binding.Spec.State == fleetv1beta1.BindingStateCreating:
 			// Check if the binding is of the creating state.
@@ -68,14 +78,20 @@ func classifyBindings(bindings []fleetv1beta1.ClusterResourceBinding, clusters [
 		}
 	}
 
-	return active, creating, obsolete, deleted
+	return active, creating, obsolete, dangling, deleted
 }
 
-// shouldDownscale checks if the scheduler needs to perform some downscaling, and (if so) how many bindings
+// shouldDownscale checks if the scheduler needs to perform some downscaling, and (if so) how many active or creating bindings
 // it should remove.
-func shouldDownscale(policy *fleetv1beta1.ClusterPolicySnapshot, desired, present int) (act bool, count int) {
-	if policy.Spec.Policy.PlacementType == fleetv1beta1.PickNPlacementType && desired < present {
-		return true, present - desired
+func shouldDownscale(policy *fleetv1beta1.ClusterPolicySnapshot, desired, present, obsolete int) (act bool, count int) {
+	if policy.Spec.Policy.PlacementType == fleetv1beta1.PickNPlacementType && desired <= present {
+		// Downscale only applies to CRPs of the Pick N placement type; and it only applies when the number of
+		// clusters requested by the user is less than the number of currently active + creating bindings combined;
+		// or there are the right number of active + creating bindings, yet some obsolete bindings still linger
+		// in the system.
+		if count := present - desired + obsolete; count > 0 {
+			return true, present - desired
+		}
 	}
 	return false, 0
 }
@@ -152,22 +168,6 @@ func equalDecisions(current, desired []fleetv1beta1.ClusterDecision) bool {
 	}
 
 	return len(current) == len(desired)
-}
-
-// notFullyScheduledCondition returns a condition for not fully scheduled policy snapshot.
-func notFullyScheduledCondition(policy *fleetv1beta1.ClusterPolicySnapshot, desiredCount int) metav1.Condition {
-	message := notFullyScheduledMessage
-	if policy.Spec.Policy.PlacementType == fleetv1beta1.PickNPlacementType {
-		message = fmt.Sprintf("%s: expected count %d, current count %d", message, policy.Spec.Policy.NumberOfClusters, desiredCount)
-	}
-	return metav1.Condition{
-		Type:               string(fleetv1beta1.PolicySnapshotScheduled),
-		Status:             metav1.ConditionFalse,
-		ObservedGeneration: policy.Generation,
-		LastTransitionTime: metav1.Now(),
-		Reason:             notFullyScheduledReason,
-		Message:            message,
-	}
 }
 
 // calcNumOfClustersToSelect calculates the number of clusters to select in a scheduling run; it
@@ -265,19 +265,22 @@ func pickTopNScoredClusters(scoredClusters ScoredClusters, N int) ScoredClusters
 //
 //   - bindings that should be created, i.e., create a binding for every cluster that is newly picked
 //     and does not have a binding associated with;
-//   - bindings that should be updated, i.e., associate a binding whose target cluster is picked again
-//     in the current run with the latest scheduling policy snapshot (if applicalbe);
+//   - bindings that should be updated, i.e., associate a binding, whose target cluster is picked again
+//     in the current run, with the latest scheduling policy snapshot (if applicable);
 //   - bindings that should be deleted, i.e., mark a binding as deleting if its target cluster is no
 //     longer picked in the current run.
+//   - bindings that require no change; such bindings are created in accordance with the latest
+//     scheduling policy already.
 //
 // Note that this function will return bindings with all fields fulfilled/refreshed, as applicable.
-func crossReferencePickedCustersAndBindings(crpName string, policy *fleetv1beta1.ClusterPolicySnapshot, picked ScoredClusters, existing ...[]*fleetv1beta1.ClusterResourceBinding) (toCreate, toUpdate, toDelete []*fleetv1beta1.ClusterResourceBinding, err error) {
+func crossReferencePickedCustersAndBindings(crpName string, policy *fleetv1beta1.ClusterPolicySnapshot, picked ScoredClusters, existing ...[]*fleetv1beta1.ClusterResourceBinding) (toCreate, toUpdate, toDelete, toRemain []*fleetv1beta1.ClusterResourceBinding, err error) {
 	errorFormat := "failed to cross reference picked clusters and existing bindings: %w"
 
 	// Pre-allocate with a reasonable capacity.
 	toCreate = make([]*fleetv1beta1.ClusterResourceBinding, 0, len(picked))
 	toUpdate = make([]*fleetv1beta1.ClusterResourceBinding, 0, 20)
 	toDelete = make([]*fleetv1beta1.ClusterResourceBinding, 0, 20)
+	toRemain = make([]*fleetv1beta1.ClusterResourceBinding, 0, 20)
 
 	// Build a map of picked scored clusters for quick lookup.
 	pickedMap := make(map[string]*ScoredCluster)
@@ -290,10 +293,19 @@ func crossReferencePickedCustersAndBindings(crpName string, policy *fleetv1beta1
 
 	for _, bindingSet := range existing {
 		for _, binding := range bindingSet {
+			if binding.Spec.PolicySnapshotName == policy.Name {
+				// The binding is already associated with the latest scheduling policy; no change
+				// is necessary.
+				toRemain = append(toRemain, binding)
+				continue
+			}
+
 			scored, ok := pickedMap[binding.Spec.TargetCluster]
 			checked[binding.Spec.TargetCluster] = true
+
 			if ok {
-				// The binding's target cluster is picked again in the current run.
+				// The binding's target cluster is picked again in the current run; yet the binding
+				// is originally created/updated in accordance with an out-of-date scheduling policy.
 
 				// Update the binding so that it is associated with the latest score.
 				affinityScore := int32(scored.Score.AffinityScore)
@@ -303,11 +315,12 @@ func crossReferencePickedCustersAndBindings(crpName string, policy *fleetv1beta1
 					TopologySpreadScore: &topologySpreadScore,
 				}
 
+				// Update the binding so that it is associated with the lastest scheduling policy.
+				binding.Spec.PolicySnapshotName = policy.Name
+
 				// Add the binding to the toUpdate list.
 				toUpdate = append(toUpdate, binding)
 			} else {
-				// The binding's target cluster is not picked in the current run; add the binding to
-				// the toDelete list.
 				toDelete = append(toDelete, binding)
 			}
 		}
@@ -319,7 +332,7 @@ func crossReferencePickedCustersAndBindings(crpName string, policy *fleetv1beta1
 			name, err := uniquename.ClusterResourceBindingUniqueName(crpName, scored.Cluster.Name)
 			if err != nil {
 				// Cannot get a unique name for the binding; normally this should never happen.
-				return nil, nil, nil, controller.NewUnexpectedBehaviorError(fmt.Errorf(errorFormat, err))
+				return nil, nil, nil, nil, controller.NewUnexpectedBehaviorError(fmt.Errorf(errorFormat, err))
 			}
 			affinityScore := int32(scored.Score.AffinityScore)
 			topologySpreadScore := int32(scored.Score.TopologySpreadScore)
@@ -338,7 +351,8 @@ func crossReferencePickedCustersAndBindings(crpName string, policy *fleetv1beta1
 					State: fleetv1beta1.BindingStateCreating,
 					// Leave the associated resource snapshot name empty; it is up to another controller
 					// to fulfill this field.
-					TargetCluster: scored.Cluster.Name,
+					PolicySnapshotName: policy.Name,
+					TargetCluster:      scored.Cluster.Name,
 					ClusterDecision: fleetv1beta1.ClusterDecision{
 						ClusterName: scored.Cluster.Name,
 						Selected:    true,
@@ -353,7 +367,35 @@ func crossReferencePickedCustersAndBindings(crpName string, policy *fleetv1beta1
 		}
 	}
 
-	return toCreate, toUpdate, toDelete, nil
+	return toCreate, toUpdate, toDelete, toRemain, nil
+}
+
+// newSchedulingDecisionsFrom returns a list of scheduling decisions, based on the newly manipulated list of
+// bindings and (if applicable) a list of filtered clusters.
+func newSchedulingDecisionsFrom(filtered []*filteredClusterWithStatus, existing ...[]*fleetv1beta1.ClusterResourceBinding) []fleetv1beta1.ClusterDecision {
+	// Pre-allocate with a reasonable capacity.
+	newDecisions := make([]fleetv1beta1.ClusterDecision, 0, maxClusterDecisionCount)
+
+	// Build new scheduling decisions.
+	for _, bindingSet := range existing {
+		for _, binding := range bindingSet {
+			newDecisions = append(newDecisions, binding.Spec.ClusterDecision)
+		}
+	}
+
+	// Move some decisions from unbound clusters, if there are still enough room.
+	if diff := maxClusterDecisionCount - len(newDecisions); diff > 0 {
+		for i := 0; i > diff && i > len(filtered); i++ {
+			clusterWithStatus := filtered[i]
+			newDecisions = append(newDecisions, fleetv1beta1.ClusterDecision{
+				ClusterName: clusterWithStatus.cluster.Name,
+				Selected:    false,
+				Reason:      clusterWithStatus.status.String(),
+			})
+		}
+	}
+
+	return newDecisions
 }
 
 // shouldRequeue determines if the scheduler should start another scheduling cycle on the same
