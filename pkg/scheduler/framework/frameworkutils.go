@@ -11,7 +11,6 @@ import (
 	"sort"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	fleetv1beta1 "go.goms.io/fleet/apis/placement/v1beta1"
@@ -169,27 +168,6 @@ func equalDecisions(current, desired []fleetv1beta1.ClusterDecision) bool {
 	return len(current) == len(desired)
 }
 
-// relieveClustersFromConsideration relieves clusters from scheduling consideration if
-// there are already active or creating bindings associated with them.
-func relieveClustersFromConsideration(clusters []fleetv1beta1.MemberCluster, existing ...[]*fleetv1beta1.ClusterResourceBinding) []fleetv1beta1.MemberCluster {
-	remains := make([]fleetv1beta1.MemberCluster, 0, len(clusters))
-
-	selectedClusterNameSet := sets.String{}
-	for _, bindingSet := range existing {
-		for _, binding := range bindingSet {
-			selectedClusterNameSet.Insert(binding.Spec.TargetCluster)
-		}
-	}
-
-	for _, cluster := range clusters {
-		if !selectedClusterNameSet.Has(cluster.Name) {
-			remains = append(remains, cluster)
-		}
-	}
-
-	return remains
-}
-
 // calcNumOfClustersToSelect calculates the number of clusters to select in a scheduling run; it
 // essentially returns the minimum among the desired number of clusters, the batch size limit,
 // and the number of scored clusters.
@@ -268,9 +246,14 @@ func crossReferencePickedCustersAndObsoleteBindings(crpName string, policy *flee
 			// Update the binding so that it is associated with the latest score.
 			affinityScore := int32(scored.Score.AffinityScore)
 			topologySpreadScore := int32(scored.Score.TopologySpreadScore)
-			binding.Spec.ClusterDecision.ClusterScore = &fleetv1beta1.ClusterScore{
-				AffinityScore:       &affinityScore,
-				TopologySpreadScore: &topologySpreadScore,
+			binding.Spec.ClusterDecision = fleetv1beta1.ClusterDecision{
+				ClusterName: scored.Cluster.Name,
+				Selected:    true,
+				ClusterScore: &fleetv1beta1.ClusterScore{
+					AffinityScore:       &affinityScore,
+					TopologySpreadScore: &topologySpreadScore,
+				},
+				Reason: pickedByHighestScoreReason,
 			}
 
 			// Update the binding so that it is associated with the lastest scheduling policy.

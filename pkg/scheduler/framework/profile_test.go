@@ -20,7 +20,9 @@ const (
 func TestProfile(t *testing.T) {
 	profile := NewProfile(dummyProfileName)
 
-	dummyAllPurposePlugin := &DummyAllPurposePlugin{}
+	dummyAllPurposePlugin := &DummyAllPurposePlugin{
+		name: dummyPluginName,
+	}
 	dummyPlugin := Plugin(dummyAllPurposePlugin)
 
 	profile.WithPostBatchPlugin(dummyAllPurposePlugin)
@@ -41,7 +43,7 @@ func TestProfile(t *testing.T) {
 		},
 	}
 
-	if !cmp.Equal(profile, wantProfile, cmp.AllowUnexported(Profile{})) {
+	if !cmp.Equal(profile, wantProfile, cmp.AllowUnexported(Profile{}, DummyAllPurposePlugin{})) {
 		t.Fatalf("NewProfile() = %v, want %v", profile, wantProfile)
 	}
 }

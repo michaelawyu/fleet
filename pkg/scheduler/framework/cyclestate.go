@@ -19,6 +19,9 @@ type StateKey string
 type StateValue interface{}
 
 // CycleStatePluginReadWriter is an interface through which plugins can store and retrieve data.
+//
+// TO-DO (chenyu1): Add methods which allow plugins to query for bindings of different types being
+// evaluated in the current scheduling cycle.
 type CycleStatePluginReadWriter interface {
 	Read(key StateKey) (StateValue, error)
 	Write(key StateKey, val StateValue)

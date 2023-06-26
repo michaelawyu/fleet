@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,7 +29,7 @@ import (
 )
 
 const (
-	CRPName        = "test-placement"
+	crpName        = "test-placement"
 	policyName     = "test-policy"
 	altPolicyName  = "another-test-policy"
 	bindingName    = "test-binding"
@@ -38,9 +39,10 @@ const (
 )
 
 var (
-	ignoreObjectMetaFields = cmpopts.IgnoreFields(metav1.ObjectMeta{}, "ResourceVersion")
-	ignoredCondFields      = cmpopts.IgnoreFields(metav1.Condition{}, "LastTransitionTime")
-	ignoredStatusFields    = cmpopts.IgnoreFields(Status{}, "reasons", "err")
+	ignoreObjectMetaResourceVersionField = cmpopts.IgnoreFields(metav1.ObjectMeta{}, "ResourceVersion")
+	ignoreObjectMetaNameField            = cmpopts.IgnoreFields(metav1.ObjectMeta{}, "Name")
+	ignoredCondFields                    = cmpopts.IgnoreFields(metav1.Condition{}, "LastTransitionTime")
+	ignoredStatusFields                  = cmpopts.IgnoreFields(Status{}, "reasons", "err")
 )
 
 // TO-DO (chenyu1): expand the test cases as development stablizes.
@@ -90,7 +92,7 @@ func TestCollectBindings(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: bindingName,
 			Labels: map[string]string{
-				fleetv1beta1.CRPTrackingLabel: CRPName,
+				fleetv1beta1.CRPTrackingLabel: crpName,
 			},
 		},
 	}
@@ -105,7 +107,7 @@ func TestCollectBindings(t *testing.T) {
 		{
 			name:    "found matching bindings",
 			binding: binding,
-			crpName: CRPName,
+			crpName: crpName,
 			want:    []fleetv1beta1.ClusterResourceBinding{*binding},
 		},
 		{
@@ -133,7 +135,7 @@ func TestCollectBindings(t *testing.T) {
 			if err != nil {
 				t.Fatalf("collectBindings() = %v, want no error", err)
 			}
-			if !cmp.Equal(bindings, tc.want, ignoreObjectMetaFields) {
+			if !cmp.Equal(bindings, tc.want, ignoreObjectMetaResourceVersionField) {
 				t.Fatalf("collectBindings() = %v, want %v", bindings, tc.want)
 			}
 		})
@@ -501,8 +503,8 @@ func TestUpdatePolicySnapshotStatus(t *testing.T) {
 
 // TestRunPostBatchPlugins tests the runPostBatchPlugins method.
 func TestRunPostBatchPlugins(t *testing.T) {
-	dummyPostBatchPluginNameA := fmt.Sprintf(dummyPostBatchPluginNameFormat, 0)
-	dummyPostBatchPluginNameB := fmt.Sprintf(dummyPostBatchPluginNameFormat, 1)
+	dummyPostBatchPluginNameA := fmt.Sprintf(dummyAllPurposePluginNameFormat, 0)
+	dummyPostBatchPluginNameB := fmt.Sprintf(dummyAllPurposePluginNameFormat, 1)
 
 	testCases := []struct {
 		name             string
@@ -514,9 +516,9 @@ func TestRunPostBatchPlugins(t *testing.T) {
 		{
 			name: "single plugin, success",
 			postBatchPlugins: []PostBatchPlugin{
-				&dummyPostBatchPlugin{
+				&DummyAllPurposePlugin{
 					name: dummyPostBatchPluginNameA,
-					runner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot) (size int, status *Status) {
+					postBatchRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot) (size int, status *Status) {
 						return 1, nil
 					},
 				},
@@ -527,9 +529,9 @@ func TestRunPostBatchPlugins(t *testing.T) {
 		{
 			name: "single plugin, success, oversized",
 			postBatchPlugins: []PostBatchPlugin{
-				&dummyPostBatchPlugin{
+				&DummyAllPurposePlugin{
 					name: dummyPostBatchPluginNameA,
-					runner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot) (size int, status *Status) {
+					postBatchRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot) (size int, status *Status) {
 						return 15, nil
 					},
 				},
@@ -540,15 +542,15 @@ func TestRunPostBatchPlugins(t *testing.T) {
 		{
 			name: "multiple plugins, all success",
 			postBatchPlugins: []PostBatchPlugin{
-				&dummyPostBatchPlugin{
+				&DummyAllPurposePlugin{
 					name: dummyPostBatchPluginNameA,
-					runner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot) (size int, status *Status) {
+					postBatchRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot) (size int, status *Status) {
 						return 2, nil
 					},
 				},
-				&dummyPostBatchPlugin{
+				&DummyAllPurposePlugin{
 					name: dummyPostBatchPluginNameB,
-					runner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot) (size int, status *Status) {
+					postBatchRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot) (size int, status *Status) {
 						return 1, nil
 					},
 				},
@@ -559,15 +561,15 @@ func TestRunPostBatchPlugins(t *testing.T) {
 		{
 			name: "multple plugins, one success, one error",
 			postBatchPlugins: []PostBatchPlugin{
-				&dummyPostBatchPlugin{
+				&DummyAllPurposePlugin{
 					name: dummyPostBatchPluginNameA,
-					runner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot) (size int, status *Status) {
+					postBatchRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot) (size int, status *Status) {
 						return 0, FromError(fmt.Errorf("internal error"), dummyPostBatchPluginNameA)
 					},
 				},
-				&dummyPostBatchPlugin{
+				&DummyAllPurposePlugin{
 					name: dummyPostBatchPluginNameB,
-					runner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot) (size int, status *Status) {
+					postBatchRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot) (size int, status *Status) {
 						return 1, nil
 					},
 				},
@@ -578,9 +580,9 @@ func TestRunPostBatchPlugins(t *testing.T) {
 		{
 			name: "single plugin, skip",
 			postBatchPlugins: []PostBatchPlugin{
-				&dummyPostBatchPlugin{
+				&DummyAllPurposePlugin{
 					name: dummyPostBatchPluginNameA,
-					runner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot) (size int, status *Status) {
+					postBatchRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot) (size int, status *Status) {
 						return 0, NewNonErrorStatus(Skip, dummyPostBatchPluginNameA)
 					},
 				},
@@ -591,9 +593,9 @@ func TestRunPostBatchPlugins(t *testing.T) {
 		{
 			name: "single plugin, unschedulable",
 			postBatchPlugins: []PostBatchPlugin{
-				&dummyPostBatchPlugin{
+				&DummyAllPurposePlugin{
 					name: dummyPostBatchPluginNameA,
-					runner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot) (size int, status *Status) {
+					postBatchRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot) (size int, status *Status) {
 						return 1, NewNonErrorStatus(ClusterUnschedulable, dummyPostBatchPluginNameA)
 					},
 				},
@@ -631,8 +633,8 @@ func TestRunPostBatchPlugins(t *testing.T) {
 
 // TestRunPreFilterPlugins tests the runPreFilterPlugins method.
 func TestRunPreFilterPlugins(t *testing.T) {
-	dummyPreFilterPluginNameA := fmt.Sprintf(dummyPreFilterPluginNameFormat, 0)
-	dummyPreFilterPluginNameB := fmt.Sprintf(dummyPreFilterPluginNameFormat, 1)
+	dummyPreFilterPluginNameA := fmt.Sprintf(dummyAllPurposePluginNameFormat, 0)
+	dummyPreFilterPluginNameB := fmt.Sprintf(dummyAllPurposePluginNameFormat, 1)
 
 	testCases := []struct {
 		name                   string
@@ -643,9 +645,9 @@ func TestRunPreFilterPlugins(t *testing.T) {
 		{
 			name: "single plugin, success",
 			preFilterPlugins: []PreFilterPlugin{
-				&dummyPreFilterPlugin{
+				&DummyAllPurposePlugin{
 					name: dummyPreFilterPluginNameA,
-					runner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot) *Status {
+					preFilterRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot) *Status {
 						return nil
 					},
 				},
@@ -654,15 +656,15 @@ func TestRunPreFilterPlugins(t *testing.T) {
 		{
 			name: "multiple plugins, one success, one skip",
 			preFilterPlugins: []PreFilterPlugin{
-				&dummyPreFilterPlugin{
+				&DummyAllPurposePlugin{
 					name: dummyPreFilterPluginNameA,
-					runner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot) (status *Status) {
+					preFilterRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot) (status *Status) {
 						return nil
 					},
 				},
-				&dummyPreFilterPlugin{
+				&DummyAllPurposePlugin{
 					name: dummyPreFilterPluginNameB,
-					runner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot) (status *Status) {
+					preFilterRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot) (status *Status) {
 						return NewNonErrorStatus(Skip, dummyPreFilterPluginNameB)
 					},
 				},
@@ -672,9 +674,9 @@ func TestRunPreFilterPlugins(t *testing.T) {
 		{
 			name: "single plugin, internal error",
 			preFilterPlugins: []PreFilterPlugin{
-				&dummyPreFilterPlugin{
+				&DummyAllPurposePlugin{
 					name: dummyPreFilterPluginNameA,
-					runner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot) *Status {
+					preFilterRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot) *Status {
 						return FromError(fmt.Errorf("internal error"), dummyPreFilterPluginNameA)
 					},
 				},
@@ -684,9 +686,9 @@ func TestRunPreFilterPlugins(t *testing.T) {
 		{
 			name: "single plugin, unschedulable",
 			preFilterPlugins: []PreFilterPlugin{
-				&dummyPreFilterPlugin{
+				&DummyAllPurposePlugin{
 					name: dummyPreFilterPluginNameA,
-					runner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot) *Status {
+					preFilterRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot) *Status {
 						return NewNonErrorStatus(ClusterUnschedulable, dummyPreFilterPluginNameA)
 					},
 				},
@@ -723,8 +725,8 @@ func TestRunPreFilterPlugins(t *testing.T) {
 
 // TestRunFilterPluginsFor tests the runFilterPluginsFor method.
 func TestRunFilterPluginsFor(t *testing.T) {
-	dummyFilterPluginNameA := fmt.Sprintf(dummyFilterPluginNameFormat, 0)
-	dummyFilterPluginNameB := fmt.Sprintf(dummyFilterPluginNameFormat, 1)
+	dummyFilterPluginNameA := fmt.Sprintf(dummyAllPurposePluginNameFormat, 0)
+	dummyFilterPluginNameB := fmt.Sprintf(dummyAllPurposePluginNameFormat, 1)
 
 	testCases := []struct {
 		name               string
@@ -735,9 +737,9 @@ func TestRunFilterPluginsFor(t *testing.T) {
 		{
 			name: "single plugin, success",
 			filterPlugins: []FilterPlugin{
-				&dummyFilterPlugin{
+				&DummyAllPurposePlugin{
 					name: dummyFilterPluginNameA,
-					runner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (status *Status) {
+					filterRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (status *Status) {
 						return nil
 					},
 				},
@@ -746,15 +748,15 @@ func TestRunFilterPluginsFor(t *testing.T) {
 		{
 			name: "multiple plugins, one success, one skipped",
 			filterPlugins: []FilterPlugin{
-				&dummyFilterPlugin{
+				&DummyAllPurposePlugin{
 					name: dummyFilterPluginNameA,
-					runner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (status *Status) {
+					filterRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (status *Status) {
 						return nil
 					},
 				},
-				&dummyFilterPlugin{
+				&DummyAllPurposePlugin{
 					name: dummyFilterPluginNameB,
-					runner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (status *Status) {
+					filterRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (status *Status) {
 						return NewNonErrorStatus(ClusterUnschedulable, dummyFilterPluginNameB)
 					},
 				},
@@ -764,9 +766,9 @@ func TestRunFilterPluginsFor(t *testing.T) {
 		{
 			name: "single plugin, internal error",
 			filterPlugins: []FilterPlugin{
-				&dummyFilterPlugin{
+				&DummyAllPurposePlugin{
 					name: dummyFilterPluginNameA,
-					runner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (status *Status) {
+					filterRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (status *Status) {
 						return FromError(fmt.Errorf("internal error"), dummyFilterPluginNameA)
 					},
 				},
@@ -776,15 +778,15 @@ func TestRunFilterPluginsFor(t *testing.T) {
 		{
 			name: "multiple plugins, one unschedulable, one success",
 			filterPlugins: []FilterPlugin{
-				&dummyFilterPlugin{
+				&DummyAllPurposePlugin{
 					name: dummyFilterPluginNameA,
-					runner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (status *Status) {
+					filterRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (status *Status) {
 						return NewNonErrorStatus(ClusterUnschedulable, dummyFilterPluginNameA)
 					},
 				},
-				&dummyFilterPlugin{
+				&DummyAllPurposePlugin{
 					name: dummyFilterPluginNameB,
-					runner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (status *Status) {
+					filterRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (status *Status) {
 						return nil
 					},
 				},
@@ -794,9 +796,9 @@ func TestRunFilterPluginsFor(t *testing.T) {
 		{
 			name: "single plugin, skip",
 			filterPlugins: []FilterPlugin{
-				&dummyFilterPlugin{
+				&DummyAllPurposePlugin{
 					name: dummyFilterPluginNameA,
-					runner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (status *Status) {
+					filterRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (status *Status) {
 						return NewNonErrorStatus(Skip, dummyFilterPluginNameA)
 					},
 				},
@@ -841,8 +843,8 @@ func TestRunFilterPluginsFor(t *testing.T) {
 
 // TestRunFilterPlugins tests the runFilterPlugins method.
 func TestRunFilterPlugins(t *testing.T) {
-	dummyFilterPluginNameA := fmt.Sprintf(dummyFilterPluginNameFormat, 0)
-	dummyFilterPluginNameB := fmt.Sprintf(dummyFilterPluginNameFormat, 1)
+	dummyFilterPluginNameA := fmt.Sprintf(dummyAllPurposePluginNameFormat, 0)
+	dummyFilterPluginNameB := fmt.Sprintf(dummyAllPurposePluginNameFormat, 1)
 
 	anotherClusterName := "singingbutterfly"
 	clusters := []fleetv1beta1.MemberCluster{
@@ -873,15 +875,15 @@ func TestRunFilterPlugins(t *testing.T) {
 		{
 			name: "three clusters, two filter plugins, all passed",
 			filterPlugins: []FilterPlugin{
-				&dummyFilterPlugin{
+				&DummyAllPurposePlugin{
 					name: dummyFilterPluginNameA,
-					runner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (status *Status) {
+					filterRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (status *Status) {
 						return nil
 					},
 				},
-				&dummyFilterPlugin{
+				&DummyAllPurposePlugin{
 					name: dummyFilterPluginNameB,
-					runner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (status *Status) {
+					filterRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (status *Status) {
 						return nil
 					},
 				},
@@ -891,18 +893,18 @@ func TestRunFilterPlugins(t *testing.T) {
 		{
 			name: "three clusters, two filter plugins, two filtered",
 			filterPlugins: []FilterPlugin{
-				&dummyFilterPlugin{
+				&DummyAllPurposePlugin{
 					name: dummyFilterPluginNameA,
-					runner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (status *Status) {
+					filterRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (status *Status) {
 						if cluster.Name == clusterName {
 							return NewNonErrorStatus(ClusterUnschedulable, dummyFilterPluginNameA)
 						}
 						return nil
 					},
 				},
-				&dummyFilterPlugin{
+				&DummyAllPurposePlugin{
 					name: dummyFilterPluginNameB,
-					runner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (status *Status) {
+					filterRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (status *Status) {
 						if cluster.Name == anotherClusterName {
 							return NewNonErrorStatus(ClusterUnschedulable, dummyFilterPluginNameB)
 						}
@@ -914,17 +916,17 @@ func TestRunFilterPlugins(t *testing.T) {
 			wantFilteredClusterNames: []string{clusterName, anotherClusterName},
 		},
 		{
-			name: "three clusters, internal error",
+			name: "three clusters, two filter plugins, one success, one internal error on specific cluster",
 			filterPlugins: []FilterPlugin{
-				&dummyFilterPlugin{
+				&DummyAllPurposePlugin{
 					name: dummyFilterPluginNameA,
-					runner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (status *Status) {
+					filterRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (status *Status) {
 						return nil
 					},
 				},
-				&dummyFilterPlugin{
+				&DummyAllPurposePlugin{
 					name: dummyFilterPluginNameB,
-					runner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (status *Status) {
+					filterRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (status *Status) {
 						if cluster.Name == anotherClusterName {
 							return FromError(fmt.Errorf("internal error"), dummyFilterPluginNameB)
 						}
@@ -993,6 +995,1011 @@ func TestRunFilterPlugins(t *testing.T) {
 
 			if !cmp.Equal(filteredMap, wantFilteredMap) {
 				t.Errorf("filtered clusters, got %v, want %v", filteredMap, wantFilteredMap)
+			}
+		})
+	}
+}
+
+// TestRunPreScorePlugins tests the runPreScorePlugins method.
+func TestRunPreScorePlugins(t *testing.T) {
+	dummyPreScorePluginNameA := fmt.Sprintf(dummyAllPurposePluginNameFormat, 0)
+	dummyPreScorePluginNameB := fmt.Sprintf(dummyAllPurposePluginNameFormat, 1)
+
+	testCases := []struct {
+		name                   string
+		preScorePlugins        []PreScorePlugin
+		wantSkippedPluginNames []string
+		wantStatus             *Status
+	}{
+		{
+			name: "single plugin, success",
+			preScorePlugins: []PreScorePlugin{
+				&DummyAllPurposePlugin{
+					name: dummyPreScorePluginNameA,
+					preScoreRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot) *Status {
+						return nil
+					},
+				},
+			},
+		},
+		{
+			name: "multiple plugins, one success, one skip",
+			preScorePlugins: []PreScorePlugin{
+				&DummyAllPurposePlugin{
+					name: dummyPreScorePluginNameA,
+					preScoreRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot) *Status {
+						return nil
+					},
+				},
+				&DummyAllPurposePlugin{
+					name: dummyPreScorePluginNameB,
+					preScoreRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot) (status *Status) {
+						return NewNonErrorStatus(Skip, dummyPreScorePluginNameB)
+					},
+				},
+			},
+			wantSkippedPluginNames: []string{dummyPreScorePluginNameB},
+		},
+		{
+			name: "single plugin, internal error",
+			preScorePlugins: []PreScorePlugin{
+				&DummyAllPurposePlugin{
+					name: dummyPreScorePluginNameA,
+					preScoreRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot) (status *Status) {
+						return FromError(fmt.Errorf("internal error"), dummyPreScorePluginNameA)
+					},
+				},
+			},
+			wantStatus: FromError(fmt.Errorf("internal error"), dummyPreScorePluginNameA),
+		},
+		{
+			name: "single plugin, unschedulable",
+			preScorePlugins: []PreScorePlugin{
+				&DummyAllPurposePlugin{
+					name: dummyPreScorePluginNameA,
+					preScoreRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot) (status *Status) {
+						return NewNonErrorStatus(ClusterUnschedulable, dummyPreScorePluginNameA)
+					},
+				},
+			},
+			wantStatus: FromError(fmt.Errorf("cluster is unschedulable"), dummyPreScorePluginNameA),
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			profile := NewProfile(dummyProfileName)
+			for _, p := range tc.preScorePlugins {
+				profile.WithPreScorePlugin(p)
+			}
+			f := &framework{
+				profile: profile,
+			}
+
+			ctx := context.Background()
+			state := NewCycleState()
+			policy := &fleetv1beta1.ClusterPolicySnapshot{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: policyName,
+				},
+			}
+
+			status := f.runPreScorePlugins(ctx, state, policy)
+			if !cmp.Equal(status, tc.wantStatus, cmp.AllowUnexported(Status{}), ignoredStatusFields) {
+				t.Errorf("runPreScorePlugins(%v, %v) = %v, want %v", state, policy, status, tc.wantStatus)
+			}
+		})
+	}
+}
+
+// TestRunScorePluginsFor tests the runScorePluginsFor method.
+func TestRunScorePluginsFor(t *testing.T) {
+	dummyScorePluginA := fmt.Sprintf(dummyAllPurposePluginNameFormat, 0)
+	dummyScorePluginB := fmt.Sprintf(dummyAllPurposePluginNameFormat, 1)
+
+	testCases := []struct {
+		name               string
+		scorePlugins       []ScorePlugin
+		skippedPluginNames []string
+		wantStatus         *Status
+		wantScoreList      map[string]*ClusterScore
+	}{
+		{
+			name: "single plugin, success",
+			scorePlugins: []ScorePlugin{
+				&DummyAllPurposePlugin{
+					name: dummyScorePluginA,
+					scoreRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (score *ClusterScore, status *Status) {
+						return &ClusterScore{
+							TopologySpreadScore: 1,
+							AffinityScore:       20,
+						}, nil
+					},
+				},
+			},
+			wantScoreList: map[string]*ClusterScore{
+				dummyScorePluginA: {
+					TopologySpreadScore: 1,
+					AffinityScore:       20,
+				},
+			},
+		},
+		{
+			name: "multiple plugins, all success",
+			scorePlugins: []ScorePlugin{
+				&DummyAllPurposePlugin{
+					name: dummyScorePluginA,
+					scoreRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (score *ClusterScore, status *Status) {
+						return &ClusterScore{
+							TopologySpreadScore: 1,
+							AffinityScore:       20,
+						}, nil
+					},
+				},
+				&DummyAllPurposePlugin{
+					name: dummyScorePluginB,
+					scoreRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (score *ClusterScore, status *Status) {
+						return &ClusterScore{
+							TopologySpreadScore: 0,
+							AffinityScore:       10,
+						}, nil
+					},
+				},
+			},
+			wantScoreList: map[string]*ClusterScore{
+				dummyScorePluginA: {
+					TopologySpreadScore: 1,
+					AffinityScore:       20,
+				},
+				dummyScorePluginB: {
+					TopologySpreadScore: 0,
+					AffinityScore:       10,
+				},
+			},
+		},
+		{
+			name: "multiple plugin, one success, one skipped",
+			scorePlugins: []ScorePlugin{
+				&DummyAllPurposePlugin{
+					name: dummyScorePluginA,
+					scoreRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (score *ClusterScore, status *Status) {
+						return &ClusterScore{
+							TopologySpreadScore: 1,
+							AffinityScore:       20,
+						}, nil
+					},
+				},
+				&DummyAllPurposePlugin{
+					name: dummyScorePluginB,
+					scoreRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (score *ClusterScore, status *Status) {
+						return &ClusterScore{
+							TopologySpreadScore: 0,
+							AffinityScore:       10,
+						}, nil
+					},
+				},
+			},
+			skippedPluginNames: []string{dummyScorePluginB},
+			wantScoreList: map[string]*ClusterScore{
+				dummyScorePluginA: {
+					TopologySpreadScore: 1,
+					AffinityScore:       20,
+				},
+			},
+		},
+		{
+			name: "single plugin, internal error",
+			scorePlugins: []ScorePlugin{
+				&DummyAllPurposePlugin{
+					name: dummyScorePluginA,
+					scoreRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (score *ClusterScore, status *Status) {
+						return nil, FromError(fmt.Errorf("internal error"), dummyScorePluginA)
+					},
+				},
+			},
+			wantStatus: FromError(fmt.Errorf("internal error"), dummyScorePluginA),
+		},
+		{
+			name: "single plugin, skip",
+			scorePlugins: []ScorePlugin{
+				&DummyAllPurposePlugin{
+					name: dummyScorePluginA,
+					scoreRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (score *ClusterScore, status *Status) {
+						return nil, NewNonErrorStatus(Skip, dummyScorePluginA)
+					},
+				},
+			},
+			wantStatus: FromError(fmt.Errorf("unexpected status"), dummyScorePluginA),
+		},
+		{
+			name: "single plugin, unschedulable",
+			scorePlugins: []ScorePlugin{
+				&DummyAllPurposePlugin{
+					name: dummyScorePluginA,
+					scoreRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (score *ClusterScore, status *Status) {
+						return nil, NewNonErrorStatus(ClusterUnschedulable, dummyScorePluginA)
+					},
+				},
+			},
+			wantStatus: FromError(fmt.Errorf("unexpected status"), dummyScorePluginA),
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			profile := NewProfile(dummyProfileName)
+			for _, p := range tc.scorePlugins {
+				profile.WithScorePlugin(p)
+			}
+			f := &framework{
+				profile: profile,
+			}
+
+			ctx := context.Background()
+			state := NewCycleState()
+			for _, name := range tc.skippedPluginNames {
+				state.skippedScorePlugins.Insert(name)
+			}
+			policy := &fleetv1beta1.ClusterPolicySnapshot{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: policyName,
+				},
+			}
+			cluster := &fleetv1beta1.MemberCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: clusterName,
+				},
+			}
+
+			scoreList, status := f.runScorePluginsFor(ctx, state, policy, cluster)
+			if !cmp.Equal(status, tc.wantStatus, cmp.AllowUnexported(Status{}), ignoredStatusFields) {
+				t.Errorf("runScorePluginsFor() status = %v, want %v", status, tc.wantStatus)
+			}
+
+			if !cmp.Equal(scoreList, tc.wantScoreList) {
+				t.Errorf("runScorePluginsFor() scoreList = %v, want %v", scoreList, tc.wantScoreList)
+			}
+		})
+	}
+}
+
+// TestRunScorePlugins tests the runScorePlugins method.
+func TestRunScorePlugins(t *testing.T) {
+	dummyScorePluginNameA := fmt.Sprintf(dummyAllPurposePluginNameFormat, 0)
+	dummyScorePluginNameB := fmt.Sprintf(dummyAllPurposePluginNameFormat, 1)
+
+	anotherClusterName := "singingbutterfly"
+	clusters := []*fleetv1beta1.MemberCluster{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: clusterName,
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: altClusterName,
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: anotherClusterName,
+			},
+		},
+	}
+
+	testCases := []struct {
+		name               string
+		scorePlugins       []ScorePlugin
+		wantScoredClusters ScoredClusters
+		expectedToFail     bool
+	}{
+		{
+			name: "three clusters, two score plugins, all scored",
+			scorePlugins: []ScorePlugin{
+				&DummyAllPurposePlugin{
+					name: dummyScorePluginNameA,
+					scoreRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (score *ClusterScore, status *Status) {
+						switch cluster.Name {
+						case clusterName:
+							return &ClusterScore{
+								TopologySpreadScore: 1,
+							}, nil
+						case altClusterName:
+							return &ClusterScore{
+								TopologySpreadScore: 0,
+							}, nil
+						case anotherClusterName:
+							return &ClusterScore{
+								TopologySpreadScore: 2,
+							}, nil
+						}
+						return &ClusterScore{}, nil
+					},
+				},
+				&DummyAllPurposePlugin{
+					name: dummyScorePluginNameB,
+					scoreRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (score *ClusterScore, status *Status) {
+						switch cluster.Name {
+						case clusterName:
+							return &ClusterScore{
+								AffinityScore: 10,
+							}, nil
+						case altClusterName:
+							return &ClusterScore{
+								AffinityScore: 20,
+							}, nil
+						case anotherClusterName:
+							return &ClusterScore{
+								AffinityScore: 15,
+							}, nil
+						}
+						return &ClusterScore{}, nil
+					},
+				},
+			},
+			wantScoredClusters: ScoredClusters{
+				{
+					Cluster: clusters[0],
+					Score: &ClusterScore{
+						TopologySpreadScore: 1,
+						AffinityScore:       10,
+					},
+				},
+				{
+					Cluster: clusters[1],
+					Score: &ClusterScore{
+						TopologySpreadScore: 0,
+						AffinityScore:       20,
+					},
+				},
+				{
+					Cluster: clusters[2],
+					Score: &ClusterScore{
+						TopologySpreadScore: 2,
+						AffinityScore:       15,
+					},
+				},
+			},
+		},
+		{
+			name: "three clusters, two score plugins, one internal error on specific cluster",
+			scorePlugins: []ScorePlugin{
+				&DummyAllPurposePlugin{
+					name: dummyScorePluginNameA,
+					scoreRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (score *ClusterScore, status *Status) {
+						switch cluster.Name {
+						case clusterName:
+							return &ClusterScore{
+								TopologySpreadScore: 1,
+							}, nil
+						case altClusterName:
+							return &ClusterScore{
+								TopologySpreadScore: 0,
+							}, nil
+						case anotherClusterName:
+							return &ClusterScore{
+								TopologySpreadScore: 2,
+							}, nil
+						}
+						return &ClusterScore{}, nil
+					},
+				},
+				&DummyAllPurposePlugin{
+					name: dummyScorePluginNameB,
+					scoreRunner: func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (score *ClusterScore, status *Status) {
+						switch cluster.Name {
+						case clusterName:
+							return &ClusterScore{
+								AffinityScore: 10,
+							}, nil
+						case altClusterName:
+							return &ClusterScore{}, FromError(fmt.Errorf("internal error"), dummyScorePluginNameB)
+						case anotherClusterName:
+							return &ClusterScore{
+								AffinityScore: 15,
+							}, nil
+						}
+						return &ClusterScore{}, nil
+					},
+				},
+			},
+			expectedToFail: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			profile := NewProfile(dummyProfileName)
+			for _, p := range tc.scorePlugins {
+				profile.WithScorePlugin(p)
+			}
+			f := &framework{
+				profile:      profile,
+				parallelizer: parallelizer.NewParallelizer(parallelizer.DefaultNumOfWorkers),
+			}
+
+			ctx := context.Background()
+			state := NewCycleState()
+			policy := &fleetv1beta1.ClusterPolicySnapshot{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: policyName,
+				},
+			}
+
+			scoredClusters, err := f.runScorePlugins(ctx, state, policy, clusters)
+			if tc.expectedToFail {
+				if err == nil {
+					t.Errorf("runScorePlugins(), got no error, want error")
+				}
+				return
+			}
+
+			// The method runs in parallel; as a result the order cannot be guaranteed.
+			// Organize the results into maps for easier comparison.
+			scoreMap := make(map[string]*ClusterScore)
+			for _, scoredCluster := range scoredClusters {
+				scoreMap[scoredCluster.Cluster.Name] = scoredCluster.Score
+			}
+
+			wantScoreMap := make(map[string]*ClusterScore)
+			for _, scoredCluster := range tc.wantScoredClusters {
+				wantScoreMap[scoredCluster.Cluster.Name] = scoredCluster.Score
+			}
+
+			if !cmp.Equal(scoreMap, wantScoreMap) {
+				t.Errorf("runScorePlugins() scored clusters, got %v, want %v", scoreMap, wantScoreMap)
+			}
+		})
+	}
+}
+
+// TestCalcNumOfClustersToSelect tests the calcNumOfClustersToSelect function.
+func TestCalcNumOfClustersToSelect(t *testing.T) {
+	testCases := []struct {
+		name    string
+		desired int
+		limit   int
+		scored  int
+		want    int
+	}{
+		{
+			name:    "no limit, enough bindings to pick",
+			desired: 3,
+			limit:   3,
+			scored:  10,
+			want:    3,
+		},
+		{
+			name:    "limit imposed, enough bindings to pick",
+			desired: 3,
+			limit:   2,
+			scored:  10,
+			want:    2,
+		},
+		{
+			name:    "limit imposed, not enough bindings to pick",
+			desired: 3,
+			limit:   2,
+			scored:  1,
+			want:    1,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			toSelect := calcNumOfClustersToSelect(tc.desired, tc.limit, tc.scored)
+			if toSelect != tc.want {
+				t.Errorf("calcNumOfClustersToSelect(), got %d, want %d", toSelect, tc.want)
+			}
+		})
+	}
+}
+
+// TestPickTopNScoredClusters tests the pickTopNScoredClusters function.
+func TestPickTopNScoredClusters(t *testing.T) {
+	scs := ScoredClusters{
+		{
+			Cluster: &fleetv1beta1.MemberCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: clusterName,
+				},
+			},
+			Score: &ClusterScore{
+				TopologySpreadScore:          1,
+				AffinityScore:                20,
+				ActiveOrCreatingBindingScore: 0,
+			},
+		},
+		{
+			Cluster: &fleetv1beta1.MemberCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: altClusterName,
+				},
+			},
+			Score: &ClusterScore{
+				TopologySpreadScore:          2,
+				AffinityScore:                10,
+				ActiveOrCreatingBindingScore: 1,
+			},
+		},
+	}
+
+	testCases := []struct {
+		name               string
+		scoredClusters     ScoredClusters
+		picks              int
+		wantScoredClusters ScoredClusters
+	}{
+		{
+			name:               "no scored clusters",
+			scoredClusters:     ScoredClusters{},
+			picks:              1,
+			wantScoredClusters: ScoredClusters{},
+		},
+		{
+			name:               "zero to pick",
+			scoredClusters:     scs,
+			picks:              0,
+			wantScoredClusters: ScoredClusters{},
+		},
+		{
+			name:           "not enough to pick",
+			scoredClusters: scs,
+			picks:          10,
+			wantScoredClusters: ScoredClusters{
+				{
+					Cluster: &fleetv1beta1.MemberCluster{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: altClusterName,
+						},
+					},
+					Score: &ClusterScore{
+						TopologySpreadScore:          2,
+						AffinityScore:                10,
+						ActiveOrCreatingBindingScore: 1,
+					},
+				},
+				{
+					Cluster: &fleetv1beta1.MemberCluster{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: clusterName,
+						},
+					},
+					Score: &ClusterScore{
+						TopologySpreadScore:          1,
+						AffinityScore:                20,
+						ActiveOrCreatingBindingScore: 0,
+					},
+				},
+			},
+		},
+		{
+			name:           "enough to pick",
+			scoredClusters: scs,
+			picks:          1,
+			wantScoredClusters: ScoredClusters{
+				{
+					Cluster: &fleetv1beta1.MemberCluster{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: altClusterName,
+						},
+					},
+					Score: &ClusterScore{
+						TopologySpreadScore:          2,
+						AffinityScore:                10,
+						ActiveOrCreatingBindingScore: 1,
+					},
+				},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			picked := pickTopNScoredClusters(tc.scoredClusters, tc.picks)
+			if !cmp.Equal(picked, tc.wantScoredClusters) {
+				t.Errorf("pickTopNScoredClusters(), got %v, want %v", picked, tc.wantScoredClusters)
+			}
+		})
+	}
+}
+
+// TestCrossReferencePickedClustersAndObsoleteBindings tests the crossReferencePickedClustersAndObsoleteBindings function.
+func TestCrossReferencePickedCustersAndObsoleteBindings(t *testing.T) {
+	policy := &fleetv1beta1.ClusterPolicySnapshot{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: policyName,
+		},
+	}
+
+	clusterName1 := "cluster-1"
+	clusterName2 := "cluster-2"
+	clusterName3 := "cluster-3"
+	clusterName4 := "cluster-4"
+
+	affinityScore1 := int32(10)
+	topologySpreadScore1 := int32(2)
+	affinityScore2 := int32(20)
+	topologySpreadScore2 := int32(1)
+	affinityScore3 := int32(30)
+	topologySpreadScore3 := int32(0)
+
+	sorted := ScoredClusters{
+		{
+			Cluster: &fleetv1beta1.MemberCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: clusterName1,
+				},
+			},
+			Score: &ClusterScore{
+				TopologySpreadScore:          int(topologySpreadScore1),
+				AffinityScore:                int(affinityScore1),
+				ActiveOrCreatingBindingScore: 1,
+			},
+		},
+		{
+			Cluster: &fleetv1beta1.MemberCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: clusterName2,
+				},
+			},
+			Score: &ClusterScore{
+				TopologySpreadScore:          int(topologySpreadScore2),
+				AffinityScore:                int(affinityScore2),
+				ActiveOrCreatingBindingScore: 0,
+			},
+		},
+		{
+			Cluster: &fleetv1beta1.MemberCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: clusterName3,
+				},
+			},
+			Score: &ClusterScore{
+				TopologySpreadScore:          int(topologySpreadScore3),
+				AffinityScore:                int(affinityScore3),
+				ActiveOrCreatingBindingScore: 1,
+			},
+		},
+	}
+
+	// Note that these names are placeholders only; actual names should be generated one.
+	bindingName1 := "binding-1"
+	bindingName2 := "binding-2"
+	bindingName3 := "binding-3"
+	bindingName4 := "binding-4"
+
+	testCases := []struct {
+		name         string
+		picked       ScoredClusters
+		obsolete     []*fleetv1beta1.ClusterResourceBinding
+		wantToCreate []*fleetv1beta1.ClusterResourceBinding
+		wantToUpdate []*fleetv1beta1.ClusterResourceBinding
+		wantToDelete []*fleetv1beta1.ClusterResourceBinding
+	}{
+		{
+			name:   "no matching obsolete bindings",
+			picked: sorted,
+			obsolete: []*fleetv1beta1.ClusterResourceBinding{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: bindingName4,
+					},
+					Spec: fleetv1beta1.ResourceBindingSpec{
+						TargetCluster: clusterName4,
+					},
+				},
+			},
+			wantToCreate: []*fleetv1beta1.ClusterResourceBinding{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: bindingName1,
+						Finalizers: []string{
+							fleetv1beta1.SchedulerCleanupFinalizer,
+						},
+						Labels: map[string]string{
+							fleetv1beta1.CRPTrackingLabel: crpName,
+						},
+					},
+					Spec: fleetv1beta1.ResourceBindingSpec{
+						State:              fleetv1beta1.BindingStateCreating,
+						PolicySnapshotName: policyName,
+						TargetCluster:      clusterName1,
+						ClusterDecision: fleetv1beta1.ClusterDecision{
+							ClusterName: clusterName1,
+							Selected:    true,
+							ClusterScore: &fleetv1beta1.ClusterScore{
+								AffinityScore:       &affinityScore1,
+								TopologySpreadScore: &topologySpreadScore1,
+							},
+							Reason: pickedByHighestScoreReason,
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: bindingName2,
+						Finalizers: []string{
+							fleetv1beta1.SchedulerCleanupFinalizer,
+						},
+						Labels: map[string]string{
+							fleetv1beta1.CRPTrackingLabel: crpName,
+						},
+					},
+					Spec: fleetv1beta1.ResourceBindingSpec{
+						State:              fleetv1beta1.BindingStateCreating,
+						PolicySnapshotName: policyName,
+						TargetCluster:      clusterName2,
+						ClusterDecision: fleetv1beta1.ClusterDecision{
+							ClusterName: clusterName2,
+							Selected:    true,
+							ClusterScore: &fleetv1beta1.ClusterScore{
+								AffinityScore:       &affinityScore2,
+								TopologySpreadScore: &topologySpreadScore2,
+							},
+							Reason: pickedByHighestScoreReason,
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: bindingName3,
+						Finalizers: []string{
+							fleetv1beta1.SchedulerCleanupFinalizer,
+						},
+						Labels: map[string]string{
+							fleetv1beta1.CRPTrackingLabel: crpName,
+						},
+					},
+					Spec: fleetv1beta1.ResourceBindingSpec{
+						State:              fleetv1beta1.BindingStateCreating,
+						PolicySnapshotName: policyName,
+						TargetCluster:      clusterName3,
+						ClusterDecision: fleetv1beta1.ClusterDecision{
+							ClusterName: clusterName3,
+							Selected:    true,
+							ClusterScore: &fleetv1beta1.ClusterScore{
+								AffinityScore:       &affinityScore3,
+								TopologySpreadScore: &topologySpreadScore3,
+							},
+							Reason: pickedByHighestScoreReason,
+						},
+					},
+				},
+			},
+			wantToUpdate: []*fleetv1beta1.ClusterResourceBinding{},
+			wantToDelete: []*fleetv1beta1.ClusterResourceBinding{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: bindingName4,
+					},
+					Spec: fleetv1beta1.ResourceBindingSpec{
+						TargetCluster: clusterName4,
+					},
+				},
+			},
+		},
+		{
+			name:   "all matching obsolete bindings",
+			picked: sorted,
+			obsolete: []*fleetv1beta1.ClusterResourceBinding{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: bindingName1,
+					},
+					Spec: fleetv1beta1.ResourceBindingSpec{
+						TargetCluster: clusterName1,
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: bindingName2,
+					},
+					Spec: fleetv1beta1.ResourceBindingSpec{
+						TargetCluster: clusterName2,
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: bindingName3,
+					},
+					Spec: fleetv1beta1.ResourceBindingSpec{
+						TargetCluster: clusterName3,
+					},
+				},
+			},
+			wantToCreate: []*fleetv1beta1.ClusterResourceBinding{},
+			wantToUpdate: []*fleetv1beta1.ClusterResourceBinding{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: bindingName1,
+					},
+					Spec: fleetv1beta1.ResourceBindingSpec{
+						TargetCluster:      clusterName1,
+						PolicySnapshotName: policyName,
+						ClusterDecision: fleetv1beta1.ClusterDecision{
+							ClusterName: clusterName1,
+							Selected:    true,
+							ClusterScore: &fleetv1beta1.ClusterScore{
+								AffinityScore:       &affinityScore1,
+								TopologySpreadScore: &topologySpreadScore1,
+							},
+							Reason: pickedByHighestScoreReason,
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: bindingName2,
+					},
+					Spec: fleetv1beta1.ResourceBindingSpec{
+						TargetCluster:      clusterName2,
+						PolicySnapshotName: policyName,
+						ClusterDecision: fleetv1beta1.ClusterDecision{
+							ClusterName: clusterName2,
+							Selected:    true,
+							ClusterScore: &fleetv1beta1.ClusterScore{
+								AffinityScore:       &affinityScore2,
+								TopologySpreadScore: &topologySpreadScore2,
+							},
+							Reason: pickedByHighestScoreReason,
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: bindingName3,
+					},
+					Spec: fleetv1beta1.ResourceBindingSpec{
+						TargetCluster:      clusterName3,
+						PolicySnapshotName: policyName,
+						ClusterDecision: fleetv1beta1.ClusterDecision{
+							ClusterName: clusterName3,
+							Selected:    true,
+							ClusterScore: &fleetv1beta1.ClusterScore{
+								AffinityScore:       &affinityScore3,
+								TopologySpreadScore: &topologySpreadScore3,
+							},
+							Reason: pickedByHighestScoreReason,
+						},
+					},
+				},
+			},
+			wantToDelete: []*fleetv1beta1.ClusterResourceBinding{},
+		},
+		{
+			name:   "mixed",
+			picked: sorted,
+			obsolete: []*fleetv1beta1.ClusterResourceBinding{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: bindingName1,
+					},
+					Spec: fleetv1beta1.ResourceBindingSpec{
+						TargetCluster: clusterName1,
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: bindingName2,
+					},
+					Spec: fleetv1beta1.ResourceBindingSpec{
+						TargetCluster: clusterName2,
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: bindingName4,
+					},
+					Spec: fleetv1beta1.ResourceBindingSpec{
+						TargetCluster: clusterName4,
+					},
+				},
+			},
+			wantToCreate: []*fleetv1beta1.ClusterResourceBinding{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: bindingName3,
+						Finalizers: []string{
+							fleetv1beta1.SchedulerCleanupFinalizer,
+						},
+						Labels: map[string]string{
+							fleetv1beta1.CRPTrackingLabel: crpName,
+						},
+					},
+					Spec: fleetv1beta1.ResourceBindingSpec{
+						State:              fleetv1beta1.BindingStateCreating,
+						PolicySnapshotName: policyName,
+						TargetCluster:      clusterName3,
+						ClusterDecision: fleetv1beta1.ClusterDecision{
+							ClusterName: clusterName3,
+							Selected:    true,
+							ClusterScore: &fleetv1beta1.ClusterScore{
+								AffinityScore:       &affinityScore3,
+								TopologySpreadScore: &topologySpreadScore3,
+							},
+							Reason: pickedByHighestScoreReason,
+						},
+					},
+				},
+			},
+			wantToUpdate: []*fleetv1beta1.ClusterResourceBinding{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: bindingName1,
+					},
+					Spec: fleetv1beta1.ResourceBindingSpec{
+						TargetCluster:      clusterName1,
+						PolicySnapshotName: policyName,
+						ClusterDecision: fleetv1beta1.ClusterDecision{
+							ClusterName: clusterName1,
+							Selected:    true,
+							ClusterScore: &fleetv1beta1.ClusterScore{
+								AffinityScore:       &affinityScore1,
+								TopologySpreadScore: &topologySpreadScore1,
+							},
+							Reason: pickedByHighestScoreReason,
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: bindingName2,
+					},
+					Spec: fleetv1beta1.ResourceBindingSpec{
+						TargetCluster:      clusterName2,
+						PolicySnapshotName: policyName,
+						ClusterDecision: fleetv1beta1.ClusterDecision{
+							ClusterName: clusterName2,
+							Selected:    true,
+							ClusterScore: &fleetv1beta1.ClusterScore{
+								AffinityScore:       &affinityScore2,
+								TopologySpreadScore: &topologySpreadScore2,
+							},
+							Reason: pickedByHighestScoreReason,
+						},
+					},
+				},
+			},
+			wantToDelete: []*fleetv1beta1.ClusterResourceBinding{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: bindingName4,
+					},
+					Spec: fleetv1beta1.ResourceBindingSpec{
+						TargetCluster: clusterName4,
+					},
+				},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			toCreate, toUpdate, toDelete, err := crossReferencePickedCustersAndObsoleteBindings(crpName, policy, tc.picked, tc.obsolete)
+			if err != nil {
+				t.Errorf("crossReferencePickedClustersAndObsoleteBindings() = %v, want no error", err)
+				return
+			}
+
+			if !cmp.Equal(toCreate, tc.wantToCreate, ignoreObjectMetaNameField) {
+				t.Errorf("crossReferencePickedClustersAndObsoleteBindings() toCreate = %v, got %v", toCreate, tc.wantToCreate)
+			}
+
+			// Verify names separately.
+			for _, binding := range toCreate {
+				prefix := fmt.Sprintf("%s-%s", crpName, binding.Spec.TargetCluster)
+				if !strings.HasPrefix(binding.Name, prefix) {
+					t.Errorf("toCreate binding name not valid, got %s, want prefix %s", binding.Name, prefix)
+				}
+			}
+
+			if !cmp.Equal(toUpdate, tc.wantToUpdate) {
+				t.Errorf("crossReferencePickedClustersAndObsoleteBindings() toUpdate = %v, got %v", toUpdate, tc.wantToUpdate)
+			}
+
+			if !cmp.Equal(toDelete, tc.wantToDelete) {
+				t.Errorf("crossReferencePickedClustersAndObsoleteBindings() toDelete = %v, got %v", toDelete, tc.wantToDelete)
 			}
 		})
 	}

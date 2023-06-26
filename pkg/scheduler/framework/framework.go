@@ -345,14 +345,6 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 	// The scheduler needs to take action; enter the actual scheduling stages.
 	klog.V(2).InfoS("Scheduling is needed; entering scheduling stages", "schedulingPolicySnapshot", schedulingPolicySnapshotRef)
 
-	// Prepare the clusters to inspect; specfically, relieve a cluster from consideration if there is
-	// already an active or creating binding associated with it.
-	//
-	// As a side note, the task performed here can be run by a plugin instead; however, this leads
-	// the plugin (even if it is supplied as first-party code) to be coupled with scheduler logic,
-	// specifically how different types of bindings are handled.
-	clusters = relieveClustersFromConsideration(clusters, active, creating)
-
 	// Prepare the cycle state for this run.
 	//
 	// Note that this state is shared between all plugins and the scheduler framework itself (though some fields are reserved by
@@ -455,6 +447,9 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 	}
 
 	// Pick the clusters.
+	//
+	// Note that at this point of the scheduling cycle, any cluster associated with a currently
+	// active or creating binding should be filtered out already.
 	picked := pickTopNScoredClusters(scoredClusters, numOfClustersToPick)
 
 	// Cross-reference the newly picked clusters with obsolete bindings; find out
