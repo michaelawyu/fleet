@@ -11,6 +11,7 @@ import (
 	"sort"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	fleetv1beta1 "go.goms.io/fleet/apis/placement/v1beta1"
@@ -168,6 +169,27 @@ func equalDecisions(current, desired []fleetv1beta1.ClusterDecision) bool {
 	return len(current) == len(desired)
 }
 
+// relieveClustersFromConsideration relieves clusters from scheduling consideration if
+// there are already active or creating bindings associated with them.
+func relieveClustersFromConsideration(clusters []fleetv1beta1.MemberCluster, existing ...[]*fleetv1beta1.ClusterResourceBinding) []fleetv1beta1.MemberCluster {
+	remains := make([]fleetv1beta1.MemberCluster, 0, len(clusters))
+
+	selectedClusterNameSet := sets.String{}
+	for _, bindingSet := range existing {
+		for _, binding := range bindingSet {
+			selectedClusterNameSet.Insert(binding.Spec.TargetCluster)
+		}
+	}
+
+	for _, cluster := range clusters {
+		if !selectedClusterNameSet.Has(cluster.Name) {
+			remains = append(remains, cluster)
+		}
+	}
+
+	return remains
+}
+
 // calcNumOfClustersToSelect calculates the number of clusters to select in a scheduling run; it
 // essentially returns the minimum among the desired number of clusters, the batch size limit,
 // and the number of scored clusters.
@@ -216,18 +238,15 @@ func pickTopNScoredClusters(scoredClusters ScoredClusters, N int) ScoredClusters
 //     in the current run, with the latest scheduling policy snapshot (if applicable);
 //   - bindings that should be deleted, i.e., mark a binding as deleting if its target cluster is no
 //     longer picked in the current run.
-//   - bindings that require no change; such bindings are created in accordance with the latest
-//     scheduling policy already.
 //
 // Note that this function will return bindings with all fields fulfilled/refreshed, as applicable.
-func crossReferencePickedCustersAndBindings(crpName string, policy *fleetv1beta1.ClusterPolicySnapshot, picked ScoredClusters, existing ...[]*fleetv1beta1.ClusterResourceBinding) (toCreate, toUpdate, toDelete, toRemain []*fleetv1beta1.ClusterResourceBinding, err error) {
+func crossReferencePickedCustersAndObsoleteBindings(crpName string, policy *fleetv1beta1.ClusterPolicySnapshot, picked ScoredClusters, obsolete []*fleetv1beta1.ClusterResourceBinding) (toCreate, toUpdate, toDelete []*fleetv1beta1.ClusterResourceBinding, err error) {
 	errorFormat := "failed to cross reference picked clusters and existing bindings: %w"
 
 	// Pre-allocate with a reasonable capacity.
 	toCreate = make([]*fleetv1beta1.ClusterResourceBinding, 0, len(picked))
 	toUpdate = make([]*fleetv1beta1.ClusterResourceBinding, 0, 20)
 	toDelete = make([]*fleetv1beta1.ClusterResourceBinding, 0, 20)
-	toRemain = make([]*fleetv1beta1.ClusterResourceBinding, 0, 20)
 
 	// Build a map of picked scored clusters for quick lookup.
 	pickedMap := make(map[string]*ScoredCluster)
@@ -238,38 +257,29 @@ func crossReferencePickedCustersAndBindings(crpName string, policy *fleetv1beta1
 	// Build a map of all clusters that have been cross-referenced.
 	checked := make(map[string]bool)
 
-	for _, bindingSet := range existing {
-		for _, binding := range bindingSet {
-			if binding.Spec.PolicySnapshotName == policy.Name {
-				// The binding is already associated with the latest scheduling policy; no change
-				// is necessary.
-				toRemain = append(toRemain, binding)
-				continue
+	for _, binding := range obsolete {
+		scored, ok := pickedMap[binding.Spec.TargetCluster]
+		checked[binding.Spec.TargetCluster] = true
+
+		if ok {
+			// The binding's target cluster is picked again in the current run; yet the binding
+			// is originally created/updated in accordance with an out-of-date scheduling policy.
+
+			// Update the binding so that it is associated with the latest score.
+			affinityScore := int32(scored.Score.AffinityScore)
+			topologySpreadScore := int32(scored.Score.TopologySpreadScore)
+			binding.Spec.ClusterDecision.ClusterScore = &fleetv1beta1.ClusterScore{
+				AffinityScore:       &affinityScore,
+				TopologySpreadScore: &topologySpreadScore,
 			}
 
-			scored, ok := pickedMap[binding.Spec.TargetCluster]
-			checked[binding.Spec.TargetCluster] = true
+			// Update the binding so that it is associated with the lastest scheduling policy.
+			binding.Spec.PolicySnapshotName = policy.Name
 
-			if ok {
-				// The binding's target cluster is picked again in the current run; yet the binding
-				// is originally created/updated in accordance with an out-of-date scheduling policy.
-
-				// Update the binding so that it is associated with the latest score.
-				affinityScore := int32(scored.Score.AffinityScore)
-				topologySpreadScore := int32(scored.Score.TopologySpreadScore)
-				binding.Spec.ClusterDecision.ClusterScore = &fleetv1beta1.ClusterScore{
-					AffinityScore:       &affinityScore,
-					TopologySpreadScore: &topologySpreadScore,
-				}
-
-				// Update the binding so that it is associated with the lastest scheduling policy.
-				binding.Spec.PolicySnapshotName = policy.Name
-
-				// Add the binding to the toUpdate list.
-				toUpdate = append(toUpdate, binding)
-			} else {
-				toDelete = append(toDelete, binding)
-			}
+			// Add the binding to the toUpdate list.
+			toUpdate = append(toUpdate, binding)
+		} else {
+			toDelete = append(toDelete, binding)
 		}
 	}
 
@@ -279,7 +289,7 @@ func crossReferencePickedCustersAndBindings(crpName string, policy *fleetv1beta1
 			name, err := uniquename.ClusterResourceBindingUniqueName(crpName, scored.Cluster.Name)
 			if err != nil {
 				// Cannot get a unique name for the binding; normally this should never happen.
-				return nil, nil, nil, nil, controller.NewUnexpectedBehaviorError(fmt.Errorf(errorFormat, err))
+				return nil, nil, nil, controller.NewUnexpectedBehaviorError(fmt.Errorf(errorFormat, err))
 			}
 			affinityScore := int32(scored.Score.AffinityScore)
 			topologySpreadScore := int32(scored.Score.TopologySpreadScore)
@@ -314,7 +324,7 @@ func crossReferencePickedCustersAndBindings(crpName string, policy *fleetv1beta1
 		}
 	}
 
-	return toCreate, toUpdate, toDelete, toRemain, nil
+	return toCreate, toUpdate, toDelete, nil
 }
 
 // newSchedulingDecisionsFrom returns a list of scheduling decisions, based on the newly manipulated list of

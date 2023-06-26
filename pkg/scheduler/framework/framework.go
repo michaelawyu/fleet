@@ -345,6 +345,14 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 	// The scheduler needs to take action; enter the actual scheduling stages.
 	klog.V(2).InfoS("Scheduling is needed; entering scheduling stages", "schedulingPolicySnapshot", schedulingPolicySnapshotRef)
 
+	// Prepare the clusters to inspect; specfically, relieve a cluster from consideration if there is
+	// already an active or creating binding associated with it.
+	//
+	// As a side note, the task performed here can be run by a plugin instead; however, this leads
+	// the plugin (even if it is supplied as first-party code) to be coupled with scheduler logic,
+	// specifically how different types of bindings are handled.
+	clusters = relieveClustersFromConsideration(clusters, active, creating)
+
 	// Prepare the cycle state for this run.
 	//
 	// Note that this state is shared between all plugins and the scheduler framework itself (though some fields are reserved by
@@ -379,8 +387,8 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 
 	// A sanity check; normally this branch will never run, as runPostBatchPlugins guarantees that
 	// the batch size limit is never greater than the desired batch size.
-	if batchSizeLimit > state.desiredBatchSize {
-		err := fmt.Errorf("batch size limit is greater than desired batch size: %d > %d", batchSizeLimit, state.desiredBatchSize)
+	if batchSizeLimit > state.desiredBatchSize || batchSizeLimit < 0 {
+		err := fmt.Errorf("batch size limit is not valid: %d, desired batch size: %d", batchSizeLimit, state.desiredBatchSize)
 		klog.ErrorS(err, "failed to set batch size limit", "schedulingPolicySnapshot", schedulingPolicySnapshotRef)
 		return ctrl.Result{}, controller.NewUnexpectedBehaviorError(err)
 	}
@@ -437,7 +445,7 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 	// Calculate the number of clusters to pick.
 	numOfClustersToPick := calcNumOfClustersToSelect(state.desiredBatchSize, state.batchSizeLimit, len(scoredClusters))
 
-	// Do a sanity check; normally this branch will never run, as calcNumOfClustersToSelect
+	// Do a sanity check; normally this branch will never run, as earlier check
 	// guarantees that the number of clusters to pick is always no greater than number of
 	// scored clusters.
 	if numOfClustersToPick > len(scoredClusters) {
@@ -449,8 +457,7 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 	// Pick the clusters.
 	picked := pickTopNScoredClusters(scoredClusters, numOfClustersToPick)
 
-	// Cross-reference the newly picked clusters with existing ones (per active + creating bindings);
-	// find out
+	// Cross-reference the newly picked clusters with obsolete bindings; find out
 	//
 	// * bindings that should be created, i.e., create a binding for every cluster that is newly picked
 	//   and does not have a binding associated with;
@@ -458,12 +465,10 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 	//   in the current run with the latest score;
 	// * bindings that should be deleted, i.e., mark a binding as deleting if its target cluster is no
 	//   longer picked in the current run.
-	// * bindings that require no change; such bindings are already created/updated with the latest
-	//   scheduling policy.
 	//
 	// Fields in the returned bindings are fulfilled and/or refreshed as applicable.
 	klog.V(2).InfoS("Cross-referencing bindings with picked clusters", "schedulingPolicySnapshot", schedulingPolicySnapshotRef)
-	toCreate, toUpdate, toDelete, toRemain, err := crossReferencePickedCustersAndBindings(crpName, policy, picked, active, creating, obsolete)
+	toCreate, toUpdate, toDelete, err := crossReferencePickedCustersAndObsoleteBindings(crpName, policy, picked, obsolete)
 
 	// Manipulate bindings accordingly.
 	klog.V(2).InfoS("Creating, updating, and/or deleting bindings", "policy", schedulingPolicySnapshotRef)
@@ -487,6 +492,9 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 	//
 	// Note that a race condition may arise here, when a rollout controller attempts to update bindings
 	// at the same time with the scheduler. An error induced requeue will happen in this case.
+	//
+	// This is set to happen after new bindings are created and old bindings are updated, to
+	// avoid interruptions (deselected then reselected) in a best effort manner.
 	if err := f.markAsDeletingFor(ctx, toDelete); err != nil {
 		klog.ErrorS(err, "failed to mark bindings as deleting", "schedulingPolicySnapshot", schedulingPolicySnapshotRef)
 		return ctrl.Result{}, err
@@ -495,7 +503,7 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 	// Update the policy snapshot status to reflect the latest decisions made in this scheduling cycle.
 
 	// Refresh scheduling decisions.
-	refreshedSchedulingDecisions := newSchedulingDecisionsFrom(filtered, toCreate, toUpdate, toRemain)
+	refreshedSchedulingDecisions := newSchedulingDecisionsFrom(filtered, toCreate, toUpdate, active, creating)
 	// Prepare new scheduling condition.
 	//
 	// In the case of downscaling, the scheduler considers the policy to be fully scheduled.
@@ -672,7 +680,7 @@ func (f *framework) runPostBatchPlugins(ctx context.Context, state *CycleState, 
 		batchSizeLimit, status := pl.PostBatch(ctx, state, policy)
 		switch {
 		case status.IsSuccess():
-			if batchSizeLimit < minBatchSizeLimit {
+			if batchSizeLimit < minBatchSizeLimit && batchSizeLimit >= 0 {
 				minBatchSizeLimit = batchSizeLimit
 			}
 		case status.IsInteralError():
