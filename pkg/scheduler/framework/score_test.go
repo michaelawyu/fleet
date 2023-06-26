@@ -10,10 +10,12 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	fleetv1beta1 "go.goms.io/fleet/apis/placement/v1beta1"
 )
 
+// TestClusterScoreToAdd tests the Add() method of ClusterScore.
 func TestClusterScoreAdd(t *testing.T) {
 	s1 := &ClusterScore{
 		TopologySpreadScore:          0,
@@ -35,6 +37,52 @@ func TestClusterScoreAdd(t *testing.T) {
 	}
 	if !cmp.Equal(s1, want) {
 		t.Fatalf("Add() = %v, want %v", s1, want)
+	}
+}
+
+// TestClusterScoreEqual tests the Equal() method of ClusterScore.
+func TestClusterScoreEqual(t *testing.T) {
+	testCases := []struct {
+		name string
+		s1   *ClusterScore
+		s2   *ClusterScore
+		want bool
+	}{
+		{
+			name: "s1 is equal to s2",
+			s1: &ClusterScore{
+				TopologySpreadScore:          1,
+				AffinityScore:                5,
+				ActiveOrCreatingBindingScore: 1,
+			},
+			s2: &ClusterScore{
+				TopologySpreadScore:          1,
+				AffinityScore:                5,
+				ActiveOrCreatingBindingScore: 1,
+			},
+			want: true,
+		},
+		{
+			name: "s1 is not equal to s2",
+			s1: &ClusterScore{
+				TopologySpreadScore:          2,
+				AffinityScore:                5,
+				ActiveOrCreatingBindingScore: 1,
+			},
+			s2: &ClusterScore{
+				TopologySpreadScore:          1,
+				AffinityScore:                7,
+				ActiveOrCreatingBindingScore: 0,
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.s1.Equal(tc.s2); got != tc.want {
+				t.Fatalf("Equal() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -98,7 +146,7 @@ func TestClusterScoreLess(t *testing.T) {
 	}
 }
 
-func TestClusterScoreEqual(t *testing.T) {
+func TestClusterScoreEqualWhenLess(t *testing.T) {
 	s1 := &ClusterScore{
 		TopologySpreadScore:          0,
 		AffinityScore:                0,
@@ -117,11 +165,31 @@ func TestClusterScoreEqual(t *testing.T) {
 }
 
 func TestScoredClustersSort(t *testing.T) {
-	clusterA := &fleetv1beta1.MemberCluster{}
-	clusterB := &fleetv1beta1.MemberCluster{}
-	clusterC := &fleetv1beta1.MemberCluster{}
-	clusterD := &fleetv1beta1.MemberCluster{}
-	clusterE := &fleetv1beta1.MemberCluster{}
+	clusterA := &fleetv1beta1.MemberCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "cluster-1",
+		},
+	}
+	clusterB := &fleetv1beta1.MemberCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "cluster-2",
+		},
+	}
+	clusterC := &fleetv1beta1.MemberCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "cluster-3",
+		},
+	}
+	clusterD := &fleetv1beta1.MemberCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "cluster-4",
+		},
+	}
+	clusterE := &fleetv1beta1.MemberCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "cluster-5",
+		},
+	}
 
 	testCases := []struct {
 		name string
@@ -384,6 +452,45 @@ func TestScoredClustersSort(t *testing.T) {
 					Score: &ClusterScore{
 						TopologySpreadScore:          0,
 						AffinityScore:                10,
+						ActiveOrCreatingBindingScore: 0,
+					},
+				},
+			},
+		},
+		{
+			name: "sort by name when scores are the same",
+			scs: ScoredClusters{
+				{
+					Cluster: clusterC,
+					Score: &ClusterScore{
+						TopologySpreadScore:          0,
+						AffinityScore:                0,
+						ActiveOrCreatingBindingScore: 0,
+					},
+				},
+				{
+					Cluster: clusterD,
+					Score: &ClusterScore{
+						TopologySpreadScore:          0,
+						AffinityScore:                0,
+						ActiveOrCreatingBindingScore: 0,
+					},
+				},
+			},
+			want: ScoredClusters{
+				{
+					Cluster: clusterD,
+					Score: &ClusterScore{
+						TopologySpreadScore:          0,
+						AffinityScore:                0,
+						ActiveOrCreatingBindingScore: 0,
+					},
+				},
+				{
+					Cluster: clusterC,
+					Score: &ClusterScore{
+						TopologySpreadScore:          0,
+						AffinityScore:                0,
 						ActiveOrCreatingBindingScore: 0,
 					},
 				},

@@ -7,10 +7,8 @@ package framework
 
 import (
 	"fmt"
-	"math/rand"
 	"reflect"
 	"sort"
-	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -190,6 +188,10 @@ func calcNumOfClustersToSelect(desired, limit, scored int) int {
 // and the N count is no greater than the length of the list.
 func pickTopNScoredClusters(scoredClusters ScoredClusters, N int) ScoredClusters {
 	// Sort the clusters by their scores in reverse order.
+	//
+	// Note that when two clusters have the same score, they are sorted by their names in
+	// lexicographical order instead; this is to achieve deterministic behavior when picking
+	// clusters.
 	sort.Sort(sort.Reverse(scoredClusters))
 
 	// No need to pick if there is no scored cluster or the number to pick is zero.
@@ -202,62 +204,7 @@ func pickTopNScoredClusters(scoredClusters ScoredClusters, N int) ScoredClusters
 		return scoredClusters
 	}
 
-	left := N
-	picked := make(ScoredClusters, 0, N)
-	sameScored := make(ScoredClusters, 0, N)
-
-	topScore := scoredClusters[0].Score
-	for i := 0; i < len(scoredClusters); i++ {
-		// The cluster has a lower score than the one with the current highest score;
-		// add all clusters with the current highest score to the list of picked clusters.
-		if scoredClusters[i].Score.Less(topScore) {
-			// There are too many clusters with the same score; pick them in random.
-			if len(sameScored) >= left {
-				// Shuffle the list of clusters with the same score.
-				//
-				// Must use a new seed every time.
-				rand.Seed(time.Now().UnixNano())
-				rand.Shuffle(len(sameScored), func(i, j int) { sameScored[i], sameScored[j] = sameScored[j], sameScored[i] })
-				// Pick only the needed number of clusters.
-				for j := 0; j < left; j++ {
-					picked = append(picked, sameScored[j])
-				}
-
-				// Reset the states.
-				left = 0
-				sameScored = make(ScoredClusters, 0)
-				break
-			}
-			// There are not enough clusters with the same score; add them all to the list of
-			// picked clusters, and re-enter the loop with a new highest score.
-			picked = append(picked, sameScored...)
-			left -= len(sameScored)
-			// Reset the array of clusters with the same score.
-			sameScored = make(ScoredClusters, 0, left)
-			sameScored = append(sameScored, scoredClusters[i])
-			// Reset top score.
-			topScore = scoredClusters[i].Score
-		}
-		// The cluster has the same score as the current top score; add it to the array of
-		// same scored clusters.
-		sameScored = append(sameScored, scoredClusters[i])
-	}
-
-	// Catch a corner case where there are still not enough picked clusters when the loop exits.
-	if left > 0 && len(sameScored) > 0 {
-		// Pick clusters in random.
-		// Shuffle the list of clusters with the same score.
-		//
-		// Must use a new seed every time.
-		rand.Seed(time.Now().UnixNano())
-		rand.Shuffle(len(sameScored), func(i, j int) { sameScored[i], sameScored[j] = sameScored[j], sameScored[i] })
-		// Pick only the needed number of clusters.
-		for j := 0; j < left && j < len(sameScored); j++ {
-			picked = append(picked, sameScored[j])
-		}
-	}
-
-	return picked
+	return scoredClusters[:N]
 }
 
 // crossReferencePickedCustersAndBindings cross references picked clusters in the current scheduling
