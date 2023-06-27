@@ -21,6 +21,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
@@ -29,13 +30,14 @@ import (
 )
 
 const (
-	crpName        = "test-placement"
-	policyName     = "test-policy"
-	altPolicyName  = "another-test-policy"
-	bindingName    = "test-binding"
-	altBindingName = "another-test-binding"
-	clusterName    = "bravelion"
-	altClusterName = "smartcat"
+	crpName            = "test-placement"
+	policyName         = "test-policy"
+	altPolicyName      = "another-test-policy"
+	bindingName        = "test-binding"
+	altBindingName     = "another-test-binding"
+	clusterName        = "bravelion"
+	altClusterName     = "smartcat"
+	anotherClusterName = "singingbutterfly"
 )
 
 var (
@@ -456,48 +458,277 @@ func TestSortByCreationTimestampBindingsWrapper(t *testing.T) {
 	}
 }
 
-// TestUpdatePolicySnapshotStatus tests the updatePolicySnapshotStatus method.
-func TestUpdatePolicySnapshotStatus(t *testing.T) {
+// TestUpdatePolicySnapshotStatusFrom tests the updatePolicySnapshotStatusFrom method.
+func TestUpdatePolicySnapshotStatusFrom(t *testing.T) {
+	defaultClusterDecisionCount := 20
+
+	affinityScore1 := int32(1)
+	topologySpreadScore1 := int32(10)
+	affinityScore2 := int32(0)
+	topologySpreadScore2 := int32(20)
+
+	filteredStatus := NewNonErrorStatus(ClusterUnschedulable, dummyPluginName, "filtered")
+
 	policy := &fleetv1beta1.ClusterPolicySnapshot{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: policyName,
 		},
 	}
-	decisions := []fleetv1beta1.ClusterDecision{
+
+	testCases := []struct {
+		name                    string
+		maxClusterDecisionCount int
+		filtered                []*filteredClusterWithStatus
+		existing                [][]*fleetv1beta1.ClusterResourceBinding
+		wantDecisions           []fleetv1beta1.ClusterDecision
+		wantCondition           metav1.Condition
+	}{
 		{
-			ClusterName: clusterName,
-			Selected:    true,
+			name:                    "no filtered",
+			maxClusterDecisionCount: defaultClusterDecisionCount,
+			existing: [][]*fleetv1beta1.ClusterResourceBinding{
+				{
+					&fleetv1beta1.ClusterResourceBinding{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: bindingName,
+						},
+						Spec: fleetv1beta1.ResourceBindingSpec{
+							ClusterDecision: fleetv1beta1.ClusterDecision{
+								ClusterName: clusterName,
+								Selected:    true,
+								ClusterScore: &fleetv1beta1.ClusterScore{
+									AffinityScore:       &affinityScore1,
+									TopologySpreadScore: &topologySpreadScore1,
+								},
+								Reason: pickedByPolicyReason,
+							},
+						},
+					},
+					&fleetv1beta1.ClusterResourceBinding{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: altBindingName,
+						},
+						Spec: fleetv1beta1.ResourceBindingSpec{
+							ClusterDecision: fleetv1beta1.ClusterDecision{
+								ClusterName: altClusterName,
+								Selected:    true,
+								ClusterScore: &fleetv1beta1.ClusterScore{
+									AffinityScore:       &affinityScore2,
+									TopologySpreadScore: &topologySpreadScore2,
+								},
+								Reason: pickedByPolicyReason,
+							},
+						},
+					},
+				},
+			},
+			wantDecisions: []fleetv1beta1.ClusterDecision{
+				{
+					ClusterName: clusterName,
+					Selected:    true,
+					ClusterScore: &fleetv1beta1.ClusterScore{
+						AffinityScore:       &affinityScore1,
+						TopologySpreadScore: &topologySpreadScore1,
+					},
+					Reason: pickedByPolicyReason,
+				},
+				{
+					ClusterName: altClusterName,
+					Selected:    true,
+					ClusterScore: &fleetv1beta1.ClusterScore{
+						AffinityScore:       &affinityScore2,
+						TopologySpreadScore: &topologySpreadScore2,
+					},
+					Reason: pickedByPolicyReason,
+				},
+			},
+			wantCondition: fullyScheduledCondition(policy),
+		},
+		{
+			name:                    "filtered and existing",
+			maxClusterDecisionCount: defaultClusterDecisionCount,
+			existing: [][]*fleetv1beta1.ClusterResourceBinding{
+				{
+					&fleetv1beta1.ClusterResourceBinding{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: bindingName,
+						},
+						Spec: fleetv1beta1.ResourceBindingSpec{
+							ClusterDecision: fleetv1beta1.ClusterDecision{
+								ClusterName: clusterName,
+								Selected:    true,
+								ClusterScore: &fleetv1beta1.ClusterScore{
+									AffinityScore:       &affinityScore1,
+									TopologySpreadScore: &topologySpreadScore1,
+								},
+								Reason: pickedByPolicyReason,
+							},
+						},
+					},
+					&fleetv1beta1.ClusterResourceBinding{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: altBindingName,
+						},
+						Spec: fleetv1beta1.ResourceBindingSpec{
+							ClusterDecision: fleetv1beta1.ClusterDecision{
+								ClusterName: altClusterName,
+								Selected:    true,
+								ClusterScore: &fleetv1beta1.ClusterScore{
+									AffinityScore:       &affinityScore2,
+									TopologySpreadScore: &topologySpreadScore2,
+								},
+								Reason: pickedByPolicyReason,
+							},
+						},
+					},
+				},
+			},
+			filtered: []*filteredClusterWithStatus{
+				{
+					cluster: &fleetv1beta1.MemberCluster{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: anotherClusterName,
+						},
+					},
+					status: filteredStatus,
+				},
+			},
+			wantDecisions: []fleetv1beta1.ClusterDecision{
+				{
+					ClusterName: clusterName,
+					Selected:    true,
+					ClusterScore: &fleetv1beta1.ClusterScore{
+						AffinityScore:       &affinityScore1,
+						TopologySpreadScore: &topologySpreadScore1,
+					},
+					Reason: pickedByPolicyReason,
+				},
+				{
+					ClusterName: altClusterName,
+					Selected:    true,
+					ClusterScore: &fleetv1beta1.ClusterScore{
+						AffinityScore:       &affinityScore2,
+						TopologySpreadScore: &topologySpreadScore2,
+					},
+					Reason: pickedByPolicyReason,
+				},
+				{
+					ClusterName: anotherClusterName,
+					Selected:    false,
+					Reason:      filteredStatus.String(),
+				},
+			},
+			wantCondition: fullyScheduledCondition(policy),
+		},
+		{
+			name:                    "none",
+			maxClusterDecisionCount: defaultClusterDecisionCount,
+			wantCondition:           fullyScheduledCondition(policy),
+		},
+		{
+			name:                    "too many existing bindings",
+			maxClusterDecisionCount: 2,
+			existing: [][]*fleetv1beta1.ClusterResourceBinding{
+				{
+					&fleetv1beta1.ClusterResourceBinding{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: bindingName,
+						},
+						Spec: fleetv1beta1.ResourceBindingSpec{
+							ClusterDecision: fleetv1beta1.ClusterDecision{
+								ClusterName: clusterName,
+								Selected:    true,
+								ClusterScore: &fleetv1beta1.ClusterScore{
+									AffinityScore:       &affinityScore1,
+									TopologySpreadScore: &topologySpreadScore1,
+								},
+								Reason: pickedByPolicyReason,
+							},
+						},
+					},
+					&fleetv1beta1.ClusterResourceBinding{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: altBindingName,
+						},
+						Spec: fleetv1beta1.ResourceBindingSpec{
+							ClusterDecision: fleetv1beta1.ClusterDecision{
+								ClusterName: altClusterName,
+								Selected:    true,
+								ClusterScore: &fleetv1beta1.ClusterScore{
+									AffinityScore:       &affinityScore2,
+									TopologySpreadScore: &topologySpreadScore2,
+								},
+								Reason: pickedByPolicyReason,
+							},
+						},
+					},
+				},
+			},
+			filtered: []*filteredClusterWithStatus{
+				{
+					cluster: &fleetv1beta1.MemberCluster{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: anotherClusterName,
+						},
+					},
+					status: filteredStatus,
+				},
+			},
+			wantDecisions: []fleetv1beta1.ClusterDecision{
+				{
+					ClusterName: clusterName,
+					Selected:    true,
+					ClusterScore: &fleetv1beta1.ClusterScore{
+						AffinityScore:       &affinityScore1,
+						TopologySpreadScore: &topologySpreadScore1,
+					},
+					Reason: pickedByPolicyReason,
+				},
+				{
+					ClusterName: altClusterName,
+					Selected:    true,
+					ClusterScore: &fleetv1beta1.ClusterScore{
+						AffinityScore:       &affinityScore2,
+						TopologySpreadScore: &topologySpreadScore2,
+					},
+					Reason: pickedByPolicyReason,
+				},
+			},
+			wantCondition: fullyScheduledCondition(policy),
 		},
 	}
-	condition := fullyScheduledCondition(policy)
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme.Scheme).
-		WithObjects(policy).
-		Build()
-	// Construct framework manually instead of using NewFramework() to avoid mocking the controller manager.
-	f := &framework{
-		client: fakeClient,
-	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme.Scheme).
+				WithObjects(policy).
+				Build()
+			// Construct framework manually instead of using NewFramework() to avoid mocking the controller manager.
+			f := &framework{
+				client:                  fakeClient,
+				maxClusterDecisionCount: tc.maxClusterDecisionCount,
+			}
 
-	ctx := context.Background()
-	if err := f.updatePolicySnapshotStatus(ctx, policy, decisions, condition); err != nil {
-		t.Fatalf("updatePolicySnapshotStatus(%v, %v, %v) = %v, want no error", policy, decisions, condition, err)
-	}
+			ctx := context.Background()
+			if err := f.updatePolicySnapshotStatusFrom(ctx, policy, klog.KObj(policy), tc.filtered, tc.existing...); err != nil {
+				t.Fatalf("updatePolicySnapshotStatusFrom() = %v, want no error", err)
+			}
 
-	// Verify that the policy was updated.
-	updatedPolicy := &fleetv1beta1.ClusterPolicySnapshot{}
-	if err := fakeClient.Get(ctx, types.NamespacedName{Name: policy.Name}, updatedPolicy); err != nil {
-		t.Fatalf("clusterPolicySnapshot Get(%v) = %v, want no error", policy.Name, err)
-	}
+			updatedPolicy := &fleetv1beta1.ClusterPolicySnapshot{}
+			if err := f.client.Get(ctx, types.NamespacedName{Name: policyName}, updatedPolicy); err != nil {
+				t.Fatalf("Get policy snapshot, got %v, want no error", err)
+			}
 
-	if !cmp.Equal(updatedPolicy.Status.ClusterDecisions, decisions) {
-		t.Errorf("cluster decisions, got %v, want %v", updatedPolicy.Status.ClusterDecisions, decisions)
-	}
+			if diff := cmp.Diff(updatedPolicy.Status.ClusterDecisions, tc.wantDecisions); diff != "" {
+				t.Errorf("policy snapshot status cluster decisions not equal (-got, +want): %s", diff)
+			}
 
-	updatedCondition := meta.FindStatusCondition(updatedPolicy.Status.Conditions, string(fleetv1beta1.PolicySnapshotScheduled))
-	if !cmp.Equal(updatedCondition, &condition, ignoredCondFields) {
-		t.Errorf("scheduled condition, got %v, want %v", updatedCondition, condition)
+			updatedCondition := meta.FindStatusCondition(updatedPolicy.Status.Conditions, string(fleetv1beta1.PolicySnapshotScheduled))
+			if diff := cmp.Diff(updatedCondition, &tc.wantCondition, ignoredCondFields); diff != "" {
+				t.Errorf("policy snapshot scheduled condition not equal (-got, +want): %s", diff)
+			}
+		})
 	}
 }
 
@@ -846,7 +1077,6 @@ func TestRunFilterPlugins(t *testing.T) {
 	dummyFilterPluginNameA := fmt.Sprintf(dummyAllPurposePluginNameFormat, 0)
 	dummyFilterPluginNameB := fmt.Sprintf(dummyAllPurposePluginNameFormat, 1)
 
-	anotherClusterName := "singingbutterfly"
 	clusters := []fleetv1beta1.MemberCluster{
 		{
 			ObjectMeta: metav1.ObjectMeta{
@@ -1268,7 +1498,6 @@ func TestRunScorePlugins(t *testing.T) {
 	dummyScorePluginNameA := fmt.Sprintf(dummyAllPurposePluginNameFormat, 0)
 	dummyScorePluginNameB := fmt.Sprintf(dummyAllPurposePluginNameFormat, 1)
 
-	anotherClusterName := "singingbutterfly"
 	clusters := []*fleetv1beta1.MemberCluster{
 		{
 			ObjectMeta: metav1.ObjectMeta{
@@ -1712,7 +1941,7 @@ func TestCrossReferencePickedCustersAndObsoleteBindings(t *testing.T) {
 								AffinityScore:       &affinityScore1,
 								TopologySpreadScore: &topologySpreadScore1,
 							},
-							Reason: pickedByHighestScoreReason,
+							Reason: pickedByPolicyReason,
 						},
 					},
 				},
@@ -1737,7 +1966,7 @@ func TestCrossReferencePickedCustersAndObsoleteBindings(t *testing.T) {
 								AffinityScore:       &affinityScore2,
 								TopologySpreadScore: &topologySpreadScore2,
 							},
-							Reason: pickedByHighestScoreReason,
+							Reason: pickedByPolicyReason,
 						},
 					},
 				},
@@ -1762,7 +1991,7 @@ func TestCrossReferencePickedCustersAndObsoleteBindings(t *testing.T) {
 								AffinityScore:       &affinityScore3,
 								TopologySpreadScore: &topologySpreadScore3,
 							},
-							Reason: pickedByHighestScoreReason,
+							Reason: pickedByPolicyReason,
 						},
 					},
 				},
@@ -1824,7 +2053,7 @@ func TestCrossReferencePickedCustersAndObsoleteBindings(t *testing.T) {
 								AffinityScore:       &affinityScore1,
 								TopologySpreadScore: &topologySpreadScore1,
 							},
-							Reason: pickedByHighestScoreReason,
+							Reason: pickedByPolicyReason,
 						},
 					},
 				},
@@ -1842,7 +2071,7 @@ func TestCrossReferencePickedCustersAndObsoleteBindings(t *testing.T) {
 								AffinityScore:       &affinityScore2,
 								TopologySpreadScore: &topologySpreadScore2,
 							},
-							Reason: pickedByHighestScoreReason,
+							Reason: pickedByPolicyReason,
 						},
 					},
 				},
@@ -1860,7 +2089,7 @@ func TestCrossReferencePickedCustersAndObsoleteBindings(t *testing.T) {
 								AffinityScore:       &affinityScore3,
 								TopologySpreadScore: &topologySpreadScore3,
 							},
-							Reason: pickedByHighestScoreReason,
+							Reason: pickedByPolicyReason,
 						},
 					},
 				},
@@ -1918,7 +2147,7 @@ func TestCrossReferencePickedCustersAndObsoleteBindings(t *testing.T) {
 								AffinityScore:       &affinityScore3,
 								TopologySpreadScore: &topologySpreadScore3,
 							},
-							Reason: pickedByHighestScoreReason,
+							Reason: pickedByPolicyReason,
 						},
 					},
 				},
@@ -1938,7 +2167,7 @@ func TestCrossReferencePickedCustersAndObsoleteBindings(t *testing.T) {
 								AffinityScore:       &affinityScore1,
 								TopologySpreadScore: &topologySpreadScore1,
 							},
-							Reason: pickedByHighestScoreReason,
+							Reason: pickedByPolicyReason,
 						},
 					},
 				},
@@ -1956,7 +2185,7 @@ func TestCrossReferencePickedCustersAndObsoleteBindings(t *testing.T) {
 								AffinityScore:       &affinityScore2,
 								TopologySpreadScore: &topologySpreadScore2,
 							},
-							Reason: pickedByHighestScoreReason,
+							Reason: pickedByPolicyReason,
 						},
 					},
 				},

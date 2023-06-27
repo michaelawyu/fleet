@@ -25,6 +25,14 @@ type DummyAllPurposePlugin struct {
 	scoreRunner     func(ctx context.Context, state CycleStatePluginReadWriter, policy *fleetv1beta1.ClusterPolicySnapshot, cluster *fleetv1beta1.MemberCluster) (score *ClusterScore, status *Status)
 }
 
+// Check that the dummy plugin implements all the interfaces at compile time.
+var _ Plugin = &DummyAllPurposePlugin{}
+var _ PostBatchPlugin = &DummyAllPurposePlugin{}
+var _ PreFilterPlugin = &DummyAllPurposePlugin{}
+var _ FilterPlugin = &DummyAllPurposePlugin{}
+var _ PreScorePlugin = &DummyAllPurposePlugin{}
+var _ ScorePlugin = &DummyAllPurposePlugin{}
+
 // Name returns the name of the dummy plugin.
 func (p *DummyAllPurposePlugin) Name() string {
 	return p.name

@@ -58,7 +58,7 @@ func classifyBindings(policy *fleetv1beta1.ClusterPolicySnapshot, bindings []fle
 		case binding.Spec.State == fleetv1beta1.BindingStateDeleting:
 			// Ignore any binding that is of the deleting state.
 		case !isTargetClusterPresent || targetCluster.Spec.State == fleetv1beta1.ClusterStateLeave:
-			// Check if the binding is now obsolete, i.e., it is associated with a cluster that is no longer
+			// Check if the binding is now dangling, i.e., it is associated with a cluster that is no longer
 			// in normal operations, but is still of an active or creating state.
 			//
 			// Note that this check is solely for the purpose of detecting a situation where bindings are stranded
@@ -92,36 +92,6 @@ func shouldDownscale(policy *fleetv1beta1.ClusterPolicySnapshot, desired, presen
 		}
 	}
 	return false, 0
-}
-
-// refreshSchedulingDecisionsFrom returns a list of scheduling decisions, based on existing
-// bindings and (if applicable) currently present decisions in the policy snapshot status.
-func refreshSchedulingDecisionsFrom(policy *fleetv1beta1.ClusterPolicySnapshot, existing ...[]*fleetv1beta1.ClusterResourceBinding) []fleetv1beta1.ClusterDecision {
-	// Pre-allocate arrays.
-	refreshed := make([]fleetv1beta1.ClusterDecision, 0, len(existing))
-
-	// Build new scheduling decisions.
-	for _, bindingSet := range existing {
-		for _, binding := range bindingSet {
-			refreshed = append(refreshed, binding.Spec.ClusterDecision)
-		}
-	}
-
-	// Move some decisions from unbound clusters, if there are still enough room.
-	if diff := maxClusterDecisionCount - len(refreshed); diff > 0 {
-		current := policy.Status.ClusterDecisions
-		for _, decision := range current {
-			if !decision.Selected {
-				refreshed = append(refreshed, decision)
-				diff--
-				if diff == 0 {
-					break
-				}
-			}
-		}
-	}
-
-	return refreshed
 }
 
 // fullySchedulingCondition returns a condition for fully scheduled policy snapshot.
@@ -253,7 +223,7 @@ func crossReferencePickedCustersAndObsoleteBindings(crpName string, policy *flee
 					AffinityScore:       &affinityScore,
 					TopologySpreadScore: &topologySpreadScore,
 				},
-				Reason: pickedByHighestScoreReason,
+				Reason: pickedByPolicyReason,
 			}
 
 			// Update the binding so that it is associated with the lastest scheduling policy.
@@ -300,7 +270,7 @@ func crossReferencePickedCustersAndObsoleteBindings(crpName string, policy *flee
 							AffinityScore:       &affinityScore,
 							TopologySpreadScore: &topologySpreadScore,
 						},
-						Reason: pickedByHighestScoreReason,
+						Reason: pickedByPolicyReason,
 					},
 				},
 			})
@@ -312,7 +282,7 @@ func crossReferencePickedCustersAndObsoleteBindings(crpName string, policy *flee
 
 // newSchedulingDecisionsFrom returns a list of scheduling decisions, based on the newly manipulated list of
 // bindings and (if applicable) a list of filtered clusters.
-func newSchedulingDecisionsFrom(filtered []*filteredClusterWithStatus, existing ...[]*fleetv1beta1.ClusterResourceBinding) []fleetv1beta1.ClusterDecision {
+func newSchedulingDecisionsFrom(maxClusterDecisionCount int, filtered []*filteredClusterWithStatus, existing ...[]*fleetv1beta1.ClusterResourceBinding) []fleetv1beta1.ClusterDecision {
 	// Pre-allocate with a reasonable capacity.
 	newDecisions := make([]fleetv1beta1.ClusterDecision, 0, maxClusterDecisionCount)
 
@@ -325,7 +295,7 @@ func newSchedulingDecisionsFrom(filtered []*filteredClusterWithStatus, existing 
 
 	// Move some decisions from unbound clusters, if there are still enough room.
 	if diff := maxClusterDecisionCount - len(newDecisions); diff > 0 {
-		for i := 0; i > diff && i > len(filtered); i++ {
+		for i := 0; i < diff && i < len(filtered); i++ {
 			clusterWithStatus := filtered[i]
 			newDecisions = append(newDecisions, fleetv1beta1.ClusterDecision{
 				ClusterName: clusterWithStatus.cluster.Name,
