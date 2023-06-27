@@ -156,12 +156,13 @@ func NewFramework(profile *Profile, manager ctrl.Manager, opts ...Option) Framew
 	// Also note that an indexer might need to be set up for improved performance.
 
 	return &framework{
-		profile:        profile,
-		client:         manager.GetClient(),
-		uncachedReader: manager.GetAPIReader(),
-		manager:        manager,
-		eventRecorder:  manager.GetEventRecorderFor(fmt.Sprintf(eventRecorderNameTemplate, profile.Name())),
-		parallelizer:   parallelizer.NewParallelizer(options.numOfWorkers),
+		profile:                 profile,
+		client:                  manager.GetClient(),
+		uncachedReader:          manager.GetAPIReader(),
+		manager:                 manager,
+		eventRecorder:           manager.GetEventRecorderFor(fmt.Sprintf(eventRecorderNameTemplate, profile.Name())),
+		parallelizer:            parallelizer.NewParallelizer(options.numOfWorkers),
+		maxClusterDecisionCount: options.maxClusterDecisionCount,
 	}
 }
 
