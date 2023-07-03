@@ -74,6 +74,11 @@ func (c *CycleState) Delete(key StateKey) {
 
 // ListClusters returns the list of clusters that the scheduler will inspect and evaluate
 // in the current scheduling cycle.
+//
+// This helps maintain consistency in a scheduling run, i.e., the scheduler and all plugins
+// have the same view of clusters being evaluated.
+//
+// Note that this is an expensive op, as it returns the deep copy of the cluster list.
 func (c *CycleState) ListClusters() []fleetv1beta1.MemberCluster {
 	// Do a deep copy to avoid any modification to the list by a single plugin will not
 	// affect the scheduler itself or other plugins.
