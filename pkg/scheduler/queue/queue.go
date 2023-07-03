@@ -8,6 +8,8 @@ Licensed under the MIT license.
 package queue
 
 import (
+	"time"
+
 	"k8s.io/client-go/util/workqueue"
 )
 
@@ -18,7 +20,15 @@ type ClusterResourcePlacementKey string
 // ClusterResourcePlacementSchedulingQueueWriter is an interface which allows sources, such as controllers, to add
 // ClusterResourcePlacementKeys to the scheduling queue.
 type ClusterResourcePlacementSchedulingQueueWriter interface {
+	// Add adds a ClusterResourcePlacementKey to the work queue.
+	//
+	// Note that this bypasses the rate limiter.
 	Add(crpKey ClusterResourcePlacementKey)
+	// AddRateLimited adds a ClusterResourcePlacementKey to the work queue after the rate limiter (if any)
+	// says that it is OK.
+	AddRateLimited(crpKey ClusterResourcePlacementKey)
+	// AddAfter adds a ClusterResourcePlacementKey to the work queue after a set duration.
+	AddAfter(crpKey ClusterResourcePlacementKey, duration time.Duration)
 }
 
 // ClusterResourcePlacementSchedulingQueue is an interface which queues ClusterResourcePlacements for the scheduler
@@ -37,6 +47,8 @@ type ClusterResourcePlacementSchedulingQueue interface {
 	NextClusterResourcePlacementKey() (key ClusterResourcePlacementKey, closed bool)
 	// Done marks a ClusterResourcePlacementKey as done.
 	Done(crpKey ClusterResourcePlacementKey)
+	// Forget untracks a ClusterResourcePlacementKey from rate limiter(s) (if any) set up with the queue.
+	Forget(crpKey ClusterResourcePlacementKey)
 }
 
 // simpleClusterResourcePlacementSchedulingQueue is a simple implementation of
@@ -121,8 +133,28 @@ func (sq *simpleClusterResourcePlacementSchedulingQueue) Done(crpKey ClusterReso
 }
 
 // Add adds a ClusterResourcePlacementKey to the work queue.
+//
+// Note that this bypasses the rate limiter (if any).
 func (sq *simpleClusterResourcePlacementSchedulingQueue) Add(crpKey ClusterResourcePlacementKey) {
 	sq.active.Add(crpKey)
+}
+
+// AddRateLimited adds a ClusterResourcePlacementKey to the work queue after the rate limiter (if any)
+// says that it is OK.
+func (sq *simpleClusterResourcePlacementSchedulingQueue) AddRateLimited(crpKey ClusterResourcePlacementKey) {
+	sq.active.AddRateLimited(crpKey)
+}
+
+// AddAfter adds a ClusterResourcePlacementKey to the work queue after a set duration.
+//
+// Note that this bypasses the rate limiter (if any)
+func (sq *simpleClusterResourcePlacementSchedulingQueue) AddAfter(crpKey ClusterResourcePlacementKey, duration time.Duration) {
+	sq.active.AddAfter(crpKey, duration)
+}
+
+// Forget untracks a ClusterResourcePlacementKey from rate limiter(s) (if any) set up with the queue.
+func (sq *simpleClusterResourcePlacementSchedulingQueue) Forget(crpKey ClusterResourcePlacementKey) {
+	sq.active.Forget(crpKey)
 }
 
 // NewSimpleClusterResourcePlacementSchedulingQueue returns a

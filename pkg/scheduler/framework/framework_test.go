@@ -21,9 +21,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	fleetv1beta1 "go.goms.io/fleet/apis/placement/v1beta1"
 	"go.goms.io/fleet/pkg/scheduler/framework/parallelizer"
@@ -145,8 +143,6 @@ func TestCollectBindings(t *testing.T) {
 }
 
 func TestClassifyBindings(t *testing.T) {
-	now := metav1.Now()
-
 	policy := &fleetv1beta1.ClusterPolicySnapshot{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: policyName,
@@ -184,22 +180,6 @@ func TestClassifyBindings(t *testing.T) {
 		},
 	}
 
-	markedForDeletionWithFinalizerBinding := fleetv1beta1.ClusterResourceBinding{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:              "binding-1",
-			Finalizers:        []string{fleetv1beta1.SchedulerCleanupFinalizer},
-			DeletionTimestamp: &now,
-		},
-	}
-	markedForDeletionWithoutFinalizerBinding := fleetv1beta1.ClusterResourceBinding{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:              "binding-2",
-			DeletionTimestamp: &now,
-		},
-		Spec: fleetv1beta1.ResourceBindingSpec{
-			State: fleetv1beta1.BindingStateDeleting,
-		},
-	}
 	deletingBinding := fleetv1beta1.ClusterResourceBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "binding-3",
@@ -260,8 +240,6 @@ func TestClassifyBindings(t *testing.T) {
 	}
 
 	bindings := []fleetv1beta1.ClusterResourceBinding{
-		markedForDeletionWithFinalizerBinding,
-		markedForDeletionWithoutFinalizerBinding,
 		deletingBinding,
 		associatedWithLeavingClusterBinding,
 		assocaitedWithDisappearedClusterBinding,
@@ -272,10 +250,9 @@ func TestClassifyBindings(t *testing.T) {
 	wantActive := []*fleetv1beta1.ClusterResourceBinding{&activeBinding}
 	wantCreating := []*fleetv1beta1.ClusterResourceBinding{&creatingBinding}
 	wantObsolete := []*fleetv1beta1.ClusterResourceBinding{&obsoleteBinding}
-	wantDeleted := []*fleetv1beta1.ClusterResourceBinding{&markedForDeletionWithFinalizerBinding}
 	wantDangling := []*fleetv1beta1.ClusterResourceBinding{&associatedWithLeavingClusterBinding, &assocaitedWithDisappearedClusterBinding}
 
-	active, creating, obsolete, dangling, deleted := classifyBindings(policy, bindings, clusters)
+	active, creating, obsolete, dangling := classifyBindings(policy, bindings, clusters)
 	if !cmp.Equal(active, wantActive) {
 		t.Errorf("classifyBindings() active = %v, want %v", active, wantActive)
 	}
@@ -290,44 +267,6 @@ func TestClassifyBindings(t *testing.T) {
 
 	if !cmp.Equal(dangling, wantDangling) {
 		t.Errorf("classifyBindings() dangling = %v, want %v", dangling, wantDangling)
-	}
-
-	if !cmp.Equal(deleted, wantDeleted) {
-		t.Errorf("classifyBindings() deleted = %v, want %v", deleted, wantDeleted)
-	}
-}
-
-// TestRemoveSchedulerCleanupFinalizerFromBindings tests the removeSchedulerFinalizerFromBindings method.
-func TestRemoveSchedulerCleanupFinalizerFromBindings(t *testing.T) {
-	binding := &fleetv1beta1.ClusterResourceBinding{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:       bindingName,
-			Finalizers: []string{fleetv1beta1.SchedulerCleanupFinalizer},
-		},
-	}
-
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme.Scheme).
-		WithObjects(binding).
-		Build()
-	// Construct framework manually instead of using NewFramework() to avoid mocking the controller manager.
-	f := &framework{
-		client: fakeClient,
-	}
-
-	ctx := context.Background()
-	if err := f.removeSchedulerCleanupFinalizerFrom(ctx, []*fleetv1beta1.ClusterResourceBinding{binding}); err != nil {
-		t.Fatalf("removeSchedulerFinalizerFromBindings() = %v, want no error", err)
-	}
-
-	// Verify that the finalizer has been removed.
-	updatedBinding := &fleetv1beta1.ClusterResourceBinding{}
-	if err := fakeClient.Get(ctx, types.NamespacedName{Name: bindingName}, updatedBinding); err != nil {
-		t.Fatalf("Binding Get(%v) = %v, want no error", bindingName, err)
-	}
-
-	if controllerutil.ContainsFinalizer(updatedBinding, fleetv1beta1.SchedulerCleanupFinalizer) {
-		t.Fatalf("Binding %s finalizers = %v, want no scheduler finalizer", bindingName, updatedBinding.Finalizers)
 	}
 }
 
@@ -711,7 +650,7 @@ func TestUpdatePolicySnapshotStatusFrom(t *testing.T) {
 			}
 
 			ctx := context.Background()
-			if err := f.updatePolicySnapshotStatusFrom(ctx, policy, klog.KObj(policy), tc.filtered, tc.existing...); err != nil {
+			if err := f.updatePolicySnapshotStatusFrom(ctx, policy, tc.filtered, tc.existing...); err != nil {
 				t.Fatalf("updatePolicySnapshotStatusFrom() = %v, want no error", err)
 			}
 
@@ -1923,9 +1862,6 @@ func TestCrossReferencePickedCustersAndObsoleteBindings(t *testing.T) {
 				{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: bindingName1,
-						Finalizers: []string{
-							fleetv1beta1.SchedulerCleanupFinalizer,
-						},
 						Labels: map[string]string{
 							fleetv1beta1.CRPTrackingLabel: crpName,
 						},
@@ -1948,9 +1884,6 @@ func TestCrossReferencePickedCustersAndObsoleteBindings(t *testing.T) {
 				{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: bindingName2,
-						Finalizers: []string{
-							fleetv1beta1.SchedulerCleanupFinalizer,
-						},
 						Labels: map[string]string{
 							fleetv1beta1.CRPTrackingLabel: crpName,
 						},
@@ -1973,9 +1906,6 @@ func TestCrossReferencePickedCustersAndObsoleteBindings(t *testing.T) {
 				{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: bindingName3,
-						Finalizers: []string{
-							fleetv1beta1.SchedulerCleanupFinalizer,
-						},
 						Labels: map[string]string{
 							fleetv1beta1.CRPTrackingLabel: crpName,
 						},
@@ -2129,9 +2059,6 @@ func TestCrossReferencePickedCustersAndObsoleteBindings(t *testing.T) {
 				{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: bindingName3,
-						Finalizers: []string{
-							fleetv1beta1.SchedulerCleanupFinalizer,
-						},
 						Labels: map[string]string{
 							fleetv1beta1.CRPTrackingLabel: crpName,
 						},

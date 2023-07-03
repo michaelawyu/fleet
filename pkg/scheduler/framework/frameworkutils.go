@@ -11,7 +11,6 @@ import (
 	"sort"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	fleetv1beta1 "go.goms.io/fleet/apis/placement/v1beta1"
 	"go.goms.io/fleet/pkg/scheduler/framework/uniquename"
@@ -30,13 +29,12 @@ import (
 //     policy; and
 //   - deleted bindings, i.e, bindings that are marked for deletion in the API server, but have not
 //     yet been marked as deleting by the scheduler.
-func classifyBindings(policy *fleetv1beta1.ClusterPolicySnapshot, bindings []fleetv1beta1.ClusterResourceBinding, clusters []fleetv1beta1.MemberCluster) (active, creating, obsolete, dangling, deleted []*fleetv1beta1.ClusterResourceBinding) {
+func classifyBindings(policy *fleetv1beta1.ClusterPolicySnapshot, bindings []fleetv1beta1.ClusterResourceBinding, clusters []fleetv1beta1.MemberCluster) (active, creating, obsolete, dangling []*fleetv1beta1.ClusterResourceBinding) {
 	// Pre-allocate arrays.
 	active = make([]*fleetv1beta1.ClusterResourceBinding, 0, len(bindings))
 	creating = make([]*fleetv1beta1.ClusterResourceBinding, 0, len(bindings))
 	obsolete = make([]*fleetv1beta1.ClusterResourceBinding, 0, len(bindings))
 	dangling = make([]*fleetv1beta1.ClusterResourceBinding, 0, len(bindings))
-	deleted = make([]*fleetv1beta1.ClusterResourceBinding, 0, len(bindings))
 
 	// Build a map for clusters for quick loopup.
 	clusterMap := make(map[string]fleetv1beta1.MemberCluster)
@@ -50,11 +48,7 @@ func classifyBindings(policy *fleetv1beta1.ClusterPolicySnapshot, bindings []fle
 
 		switch {
 		case binding.DeletionTimestamp != nil:
-			// Check if the binding has been deleted, but still has the scheduler cleanup finalizer in presence.
-			if controllerutil.ContainsFinalizer(&binding, fleetv1beta1.SchedulerCleanupFinalizer) {
-				deleted = append(deleted, &binding)
-			}
-			// Ignore any binding that has been deleted, and has no scheduler cleanup finalizer in presence.
+			// Ignore any binding that has been deleted.
 		case binding.Spec.State == fleetv1beta1.BindingStateDeleting:
 			// Ignore any binding that is of the deleting state.
 		case !isTargetClusterPresent || targetCluster.Spec.State == fleetv1beta1.ClusterStateLeave:
@@ -76,7 +70,7 @@ func classifyBindings(policy *fleetv1beta1.ClusterPolicySnapshot, bindings []fle
 		}
 	}
 
-	return active, creating, obsolete, dangling, deleted
+	return active, creating, obsolete, dangling
 }
 
 // shouldDownscale checks if the scheduler needs to perform some downscaling, and (if so) how many active or creating bindings
@@ -250,9 +244,6 @@ func crossReferencePickedCustersAndObsoleteBindings(crpName string, policy *flee
 			toCreate = append(toCreate, &fleetv1beta1.ClusterResourceBinding{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: name,
-					Finalizers: []string{
-						fleetv1beta1.SchedulerCleanupFinalizer,
-					},
 					Labels: map[string]string{
 						fleetv1beta1.CRPTrackingLabel: crpName,
 					},

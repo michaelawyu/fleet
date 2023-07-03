@@ -10,12 +10,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-const (
-	// SchedulerCleanupFinalizer is a finalizer added by the scheduler to all bindings, to make sure
-	// that the scheduler can react to binding deletions if necessary.
-	SchedulerCleanupFinalizer = fleetPrefix + "scheduler-cleanup"
-)
-
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:scope=Cluster,categories={fleet},shortName=rb
 // +kubebuilder:subresource:status
@@ -48,7 +42,7 @@ type ResourceBindingSpec struct {
 	// it points to the name of the leading snapshot of the index group.
 	ResourceSnapshotName string `json:"resourceSnapshotName"`
 
-	// PolicySnapshtName is the name of the scheduling policy snapshot that this resource binding
+	// PolicySnapshotName is the name of the scheduling policy snapshot that this resource binding
 	// points to; more specifically, the scheduler creates this bindings in accordance with this
 	// scheduling policy snapshot.
 	PolicySnapshotName string `json:"policySnapshotName"`
