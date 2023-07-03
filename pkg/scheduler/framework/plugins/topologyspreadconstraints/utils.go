@@ -207,8 +207,3 @@ func prepareTopologySpreadConstraintsPluginState(state framework.CycleStatePlugi
 		scores:                    scores,
 	}
 }
-
-// retrieve
-func retrievePluginState(state framework.CycleStatePluginReadWriter) *topologySpreadConstraintsPluginState {
-
-}
