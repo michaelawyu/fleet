@@ -22,8 +22,18 @@ func TestCycleStateBasicOps(t *testing.T) {
 			},
 		},
 	}
+	bindings := []fleetv1beta1.ClusterResourceBinding{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: bindingName,
+			},
+			Spec: fleetv1beta1.ResourceBindingSpec{
+				TargetCluster: clusterName,
+			},
+		},
+	}
 
-	cs := NewCycleState(clusters)
+	cs := NewCycleState(clusters, bindings)
 
 	k, v := "key", "value"
 	cs.Write(StateKey(k), StateValue(v))
@@ -38,5 +48,9 @@ func TestCycleStateBasicOps(t *testing.T) {
 	clustersInState := cs.ListClusters()
 	if diff := cmp.Diff(clustersInState, clusters); diff != "" {
 		t.Fatalf("ListClusters() diff (-got, +want): %s", diff)
+	}
+
+	if !cs.IsClusterScheduledOrBound(clusterName) {
+		t.Fatalf("IsClusterScheduled(%v) = false, want true", clusterName)
 	}
 }
