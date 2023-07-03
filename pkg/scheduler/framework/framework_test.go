@@ -386,7 +386,7 @@ func TestRunPreFilterPlugins(t *testing.T) {
 			}
 
 			ctx := context.Background()
-			state := NewCycleState()
+			state := NewCycleState([]fleetv1beta1.MemberCluster{})
 			policy := &fleetv1beta1.ClusterSchedulingPolicySnapshot{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: policyName,
@@ -497,7 +497,7 @@ func TestRunFilterPluginsFor(t *testing.T) {
 			}
 
 			ctx := context.Background()
-			state := NewCycleState()
+			state := NewCycleState([]fleetv1beta1.MemberCluster{})
 			for _, name := range tc.skippedPluginNames {
 				state.skippedFilterPlugins.Insert(name)
 			}
@@ -668,7 +668,7 @@ func TestRunFilterPlugins(t *testing.T) {
 			}
 
 			ctx := context.Background()
-			state := NewCycleState()
+			state := NewCycleState(clusters)
 			policy := &fleetv1beta1.ClusterSchedulingPolicySnapshot{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: policyName,

@@ -73,3 +73,10 @@ func NewProfile(name string) *Profile {
 		registeredPlugins: map[string]Plugin{},
 	}
 }
+
+// SetUpAllPlugins sets up all plugins registered in the profile with a scheduling framework.
+func (p *Profile) SetUpAllPlugins(handle Handle) {
+	for _, plugin := range p.registeredPlugins {
+		plugin.SetUpWithFramework(handle)
+	}
+}

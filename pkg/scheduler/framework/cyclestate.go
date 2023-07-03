@@ -10,6 +10,8 @@ import (
 	"sync"
 
 	"k8s.io/apimachinery/pkg/util/sets"
+
+	fleetv1beta1 "go.goms.io/fleet/apis/placement/v1beta1"
 )
 
 // StateKey is the key for a state value stored in a CycleState.
@@ -26,6 +28,8 @@ type CycleStatePluginReadWriter interface {
 	Read(key StateKey) (StateValue, error)
 	Write(key StateKey, val StateValue)
 	Delete(key StateKey)
+
+	ListClusters() []fleetv1beta1.MemberCluster
 }
 
 // CycleState is, similar to its namesake in kube-scheduler, provides a way for plugins to
@@ -37,6 +41,10 @@ type CycleStatePluginReadWriter interface {
 type CycleState struct {
 	// store is a concurrency-safe store (a map).
 	store sync.Map
+
+	// clusters is the list of clusters that the scheduler will inspect and evaluate
+	// in the current scheduling cycle.
+	clusters []fleetv1beta1.MemberCluster
 
 	// skippedFilterPlugins is a set of Filter plugins that should be skipped in the current scheduling cycle.
 	//
@@ -64,10 +72,21 @@ func (c *CycleState) Delete(key StateKey) {
 	c.store.Delete(key)
 }
 
+// ListClusters returns the list of clusters that the scheduler will inspect and evaluate
+// in the current scheduling cycle.
+func (c *CycleState) ListClusters() []fleetv1beta1.MemberCluster {
+	// Do a deep copy to avoid any modification to the list by a single plugin will not
+	// affect the scheduler itself or other plugins.
+	clusters := make([]fleetv1beta1.MemberCluster, len(c.clusters))
+	copy(clusters, c.clusters)
+	return clusters
+}
+
 // NewCycleState creates a CycleState.
-func NewCycleState() *CycleState {
+func NewCycleState(clusters []fleetv1beta1.MemberCluster) *CycleState {
 	return &CycleState{
 		store:                sync.Map{},
+		clusters:             clusters,
 		skippedFilterPlugins: sets.NewString(),
 	}
 }

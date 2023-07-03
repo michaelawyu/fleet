@@ -140,7 +140,7 @@ func NewFramework(profile *Profile, manager ctrl.Manager, opts ...Option) Framew
 	//
 	// Also note that an indexer might need to be set up for improved performance.
 
-	return &framework{
+	f := &framework{
 		profile:                 profile,
 		client:                  manager.GetClient(),
 		uncachedReader:          manager.GetAPIReader(),
@@ -149,6 +149,11 @@ func NewFramework(profile *Profile, manager ctrl.Manager, opts ...Option) Framew
 		parallelizer:            parallelizer.NewParallelizer(options.numOfWorkers),
 		maxClusterDecisionCount: options.maxClusterDecisionCount,
 	}
+
+	// Set up the plugins.
+	profile.SetUpAllPlugins(f)
+
+	return f
 }
 
 // Client returns the (cached) client in use by the scheduler framework.
@@ -242,7 +247,7 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 	// Note that this state is shared between all plugins and the scheduler framework itself (though some fields are reserved by
 	// the framework). These resevered fields are never accessed concurrently, as each scheduling run has its own cycle and a run
 	// is always executed in one single goroutine; plugin access to the state is guarded by sync.Map.
-	state := NewCycleState()
+	state := NewCycleState(clusters)
 
 	switch policy.Spec.Policy.PlacementType {
 	case fleetv1beta1.PickAllPlacementType:
