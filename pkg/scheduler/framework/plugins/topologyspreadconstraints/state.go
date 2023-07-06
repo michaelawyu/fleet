@@ -29,7 +29,8 @@ type bindingCounterByDomain struct {
 }
 
 type clusterName string
-type doNotScheduleViolations map[clusterName]bool
+type violationReasons []string
+type doNotScheduleViolations map[clusterName]violationReasons
 type topologySpreadScores map[clusterName]int
 
 type topologySpreadConstraintsPluginState struct {

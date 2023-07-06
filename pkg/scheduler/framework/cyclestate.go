@@ -47,12 +47,9 @@ type CycleState struct {
 	// in the current scheduling cycle.
 	clusters []fleetv1beta1.MemberCluster
 
-	// bindings is the list of bindings that the scheduler has found
-	// in the current scheduling cycle.
-	bindings []fleetv1beta1.ClusterResourceBinding
-
 	// scheduledOrBound is a map between the name of a cluster and its scheduling status,
-	// i.e., whether there is already a scheduled or bound binding for the cluster.
+	// i.e., whether there is already a binding of the scheduler or bound state, relevant to
+	// the current scheduling cycle in presence for the cluster.
 	scheduledOrBound map[string]bool
 
 	// skippedFilterPlugins is a set of Filter plugins that should be skipped in the current scheduling cycle.
@@ -85,10 +82,10 @@ func (c *CycleState) Delete(key StateKey) {
 // in the current scheduling cycle.
 //
 // This helps maintain consistency in a scheduling run and improve performance, i.e., the
-// scheduler and all plugins have the same view of clusters being evaluated, and any plugin
-// which requires the full cluster view no longer needs to list clusters on its own..
+// scheduler and all plugins can have the same view of clusters being evaluated, and any plugin
+// which requires the view no longer needs to list clusters on its own.
 //
-// Note that this is an expensive op, as it returns the deep copy of the cluster list.
+// Note that this is a relatively expensive op, as it returns the deep copy of the cluster list.
 func (c *CycleState) ListClusters() []fleetv1beta1.MemberCluster {
 	// Do a deep copy to avoid any modification to the list by a single plugin will not
 	// affect the scheduler itself or other plugins.
@@ -99,24 +96,20 @@ func (c *CycleState) ListClusters() []fleetv1beta1.MemberCluster {
 
 // IsClusterScheduledOrBound returns whether a cluster already has a scheduled or bound binding
 // associated.
+//
+// This helps maintain consistence in a scheduling run and improve performance, i.e., the
+// scheduler and all plugins can have the same view of current spread of bindings. and any plugin
+// which requires the view no longer needs to list bindings on its own.
 func (c *CycleState) IsClusterScheduledOrBound(name string) bool {
 	return c.scheduledOrBound[name]
 }
 
 // NewCycleState creates a CycleState.
-func NewCycleState(clusters []fleetv1beta1.MemberCluster, bindings []fleetv1beta1.ClusterResourceBinding) *CycleState {
-	scheduledOrBound := make(map[string]bool)
-	for _, binding := range bindings {
-		if binding.Spec.State == fleetv1beta1.BindingStateScheduled || binding.Spec.State == fleetv1beta1.BindingStateBound {
-			scheduledOrBound[binding.Spec.TargetCluster] = true
-		}
-	}
-
+func NewCycleState(clusters []fleetv1beta1.MemberCluster, scheduledOrBoundBindings ...[]*fleetv1beta1.ClusterResourceBinding) *CycleState {
 	return &CycleState{
 		store:                sync.Map{},
 		clusters:             clusters,
-		bindings:             bindings,
-		scheduledOrBound:     scheduledOrBound,
+		scheduledOrBound:     prepareScheduledOrBoundMap(scheduledOrBoundBindings...),
 		skippedFilterPlugins: sets.NewString(),
 	}
 }

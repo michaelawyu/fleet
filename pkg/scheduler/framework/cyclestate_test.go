@@ -22,18 +22,28 @@ func TestCycleStateBasicOps(t *testing.T) {
 			},
 		},
 	}
-	bindings := []fleetv1beta1.ClusterResourceBinding{
+	scheduledOrBoundBindings := []*fleetv1beta1.ClusterResourceBinding{
 		{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: bindingName,
 			},
 			Spec: fleetv1beta1.ResourceBindingSpec{
 				TargetCluster: clusterName,
+				State:         fleetv1beta1.BindingStateBound,
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: altBindingName,
+			},
+			Spec: fleetv1beta1.ResourceBindingSpec{
+				TargetCluster: altClusterName,
+				State:         fleetv1beta1.BindingStateScheduled,
 			},
 		},
 	}
 
-	cs := NewCycleState(clusters, bindings)
+	cs := NewCycleState(clusters, scheduledOrBoundBindings)
 
 	k, v := "key", "value"
 	cs.Write(StateKey(k), StateValue(v))
@@ -50,7 +60,9 @@ func TestCycleStateBasicOps(t *testing.T) {
 		t.Fatalf("ListClusters() diff (-got, +want): %s", diff)
 	}
 
-	if !cs.IsClusterScheduledOrBound(clusterName) {
-		t.Fatalf("IsClusterScheduled(%v) = false, want true", clusterName)
+	for _, binding := range scheduledOrBoundBindings {
+		if !cs.IsClusterScheduledOrBound(binding.Spec.TargetCluster) {
+			t.Fatalf("IsClusterScheduledOrBound(%v) = false, want true", binding.Spec.TargetCluster)
+		}
 	}
 }

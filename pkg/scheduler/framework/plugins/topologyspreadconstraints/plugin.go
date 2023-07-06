@@ -21,6 +21,10 @@ const (
 	maxSkewViolationPenality = 1000
 )
 
+var (
+	doNotScheduleConstraintViolationReasonTemplate = "violated topology spread constraint %q (max skew %d)"
+)
+
 // TopologySpreadConstraintsPlugin is the scheduler plugin that enforces the
 // topology spread constraints (if any) defined on a CRP.
 type TopologySpreadConstraintsPlugin struct {
@@ -108,6 +112,8 @@ func (p *TopologySpreadConstraintsPlugin) readPluginState(state framework.CycleS
 
 // PostBatch allows the plugin to connect to the PostBatch extension point in the scheduling
 // framework.
+//
+// Note that the scheduler will not run this extension point in parallel.
 func (p *TopologySpreadConstraintsPlugin) PostBatch(
 	ctx context.Context,
 	state framework.CycleStatePluginReadWriter,
@@ -115,7 +121,7 @@ func (p *TopologySpreadConstraintsPlugin) PostBatch(
 ) (int, *framework.Status) {
 	if len(policy.Spec.Policy.TopologySpreadConstraints) == 0 {
 		// There are no topology spread constraints to enforce; skip.
-		return 0, framework.NewNonErrorStatus(framework.ClusterUnschedulable, p.Name(), "no topology spread constraint is present")
+		return 0, framework.NewNonErrorStatus(framework.Skip, p.Name(), "no topology spread constraint is present")
 	}
 
 	// Prepare some common states for future use. This helps avoid the cost of repeatedly
@@ -123,7 +129,10 @@ func (p *TopologySpreadConstraintsPlugin) PostBatch(
 	//
 	// Note that this will happen as long as there is one or more topology spread constraints
 	// in presence in the scheduling policy, regardless of its settings.
-	pluginState := prepareTopologySpreadConstraintsPluginState(state, policy)
+	pluginState, err := prepareTopologySpreadConstraintsPluginState(state, policy)
+	if err != nil {
+		return 0, framework.FromError(err, p.Name(), "failed to prepare plugin state")
+	}
 
 	// Save the plugin state.
 	state.Write(framework.StateKey(p.Name()), pluginState)
@@ -137,6 +146,8 @@ func (p *TopologySpreadConstraintsPlugin) PostBatch(
 
 // PreFilter allows the plugin to connect to the PreFilter extension point in the scheduling
 // framework.
+//
+// Note that the scheduler will not run this extension point in parallel.
 func (p *TopologySpreadConstraintsPlugin) PreFilter(
 	ctx context.Context,
 	state framework.CycleStatePluginReadWriter,
@@ -150,6 +161,7 @@ func (p *TopologySpreadConstraintsPlugin) PreFilter(
 		return framework.NewNonErrorStatus(framework.Skip, p.Name(), "no topology spread constraint is present")
 	}
 
+	// Read the plugin state.
 	pluginState, err := p.readPluginState(state)
 	if err != nil {
 		// This branch should never be reached, as the plugin state has been set at the very
@@ -165,6 +177,7 @@ func (p *TopologySpreadConstraintsPlugin) PreFilter(
 		return framework.NewNonErrorStatus(framework.Skip, p.Name(), "no DoNotSchedule topology spread constraint is present")
 	}
 
+	// All done.
 	return nil
 }
 
@@ -175,7 +188,22 @@ func (p *TopologySpreadConstraintsPlugin) Filter(
 	policy *fleetv1beta1.ClusterSchedulingPolicySnapshot,
 	cluster *fleetv1beta1.MemberCluster,
 ) (status *framework.Status) {
-	// Not yet implemented.
+	// Read the plugin state.
+	pluginState, err := p.readPluginState(state)
+	if err != nil {
+		// This branch should never be reached, as the plugin state has been set at the very
+		// first extension point.
+		return framework.FromError(err, p.Name(), "failed to read plugin state")
+	}
+
+	// The state is safe for concurrent reads.
+	reasons, ok := pluginState.violations[clusterName(cluster.Name)]
+	if ok {
+		// Violation is found; filter this cluster out.
+		return framework.NewNonErrorStatus(framework.ClusterUnschedulable, p.Name(), reasons...)
+	}
+
+	// No violation is found; all done.
 	return nil
 }
 
@@ -186,7 +214,26 @@ func (p *TopologySpreadConstraintsPlugin) PreScore(
 	state framework.CycleStatePluginReadWriter,
 	policy *fleetv1beta1.ClusterSchedulingPolicySnapshot,
 ) (status *framework.Status) {
-	// Not yet implemented.
+	// Read the plugin state.
+	pluginState, err := p.readPluginState(state)
+	if err != nil {
+		// This branch should never be reached, as the plugin state has been set at the very
+		// first extension point.
+		return framework.FromError(err, p.Name(), "failed to read plugin state")
+	}
+
+	if len(pluginState.scheduleAnywayConstraints) == 0 && len(pluginState.doNotScheduleConstraints) == 0 {
+		// There are no topology spread constraints to enforce; skip.
+		//
+		// Note that this will lead the scheduler to skip this plugin in the next stage
+		// (Score).
+		//
+		// Also note that the plugin will still score clusters even if there are only DoNotSchedule
+		// topology spread constraints in presence; this can help reduce the skew (if applicable).
+		return framework.NewNonErrorStatus(framework.Skip, p.Name(), "no topology spread constraint is present")
+	}
+
+	// All done.
 	return nil
 }
 
@@ -197,6 +244,27 @@ func (p *TopologySpreadConstraintsPlugin) Score(
 	policy *fleetv1beta1.ClusterSchedulingPolicySnapshot,
 	cluster *fleetv1beta1.MemberCluster,
 ) (score *framework.ClusterScore, status *framework.Status) {
-	// Not yet implemented.
-	return nil, nil
+	// Read the plugin state.
+	pluginState, err := p.readPluginState(state)
+	if err != nil {
+		// This branch should never be reached, as the plugin state has been set at the very
+		// first extension point.
+		return nil, framework.FromError(err, p.Name(), "failed to read plugin state")
+	}
+
+	// The state is safe for concurrent reads.
+	topologySpreadScore, ok := pluginState.scores[clusterName(cluster.Name)]
+	if !ok {
+		// No score is found; normally this should never happen, as the state is consistent,
+		// and each cluster that does not violate DoNotSchedule topology spread constraints
+		// will have a score assigned.
+		return nil, framework.FromError(fmt.Errorf("no score found for cluster %s", cluster.Name), p.Name())
+	}
+
+	// Return a ClusterScore.
+	score = &framework.ClusterScore{
+		TopologySpreadScore: topologySpreadScore,
+	}
+	// All done.
+	return score, nil
 }
