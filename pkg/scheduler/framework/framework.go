@@ -261,7 +261,12 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 	// is always executed in one single goroutine; plugin access to the state is guarded by sync.Map.
 	state := NewCycleState()
 
-	switch policy.Spec.Policy.PlacementType {
+	placementType := fleetv1beta1.PickAllPlacementType
+	if policy.Spec.Policy != nil {
+		// If the policy is unspecified, use the PickAll placement type, as the API spec assumes.
+		placementType = policy.Spec.Policy.PlacementType
+	}
+	switch placementType {
 	case fleetv1beta1.PickAllPlacementType:
 		// Run the scheduling cycle for policy of the PickAll placement type.
 		return f.runSchedulingCycleForPickAllPlacementType(ctx, state, crpName, policy, clusters, bound, scheduled, obsolete)
