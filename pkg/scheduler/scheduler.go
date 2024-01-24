@@ -23,6 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	fleetv1beta1 "go.goms.io/fleet/apis/placement/v1beta1"
+	"go.goms.io/fleet/pkg/metrics"
 	"go.goms.io/fleet/pkg/scheduler/framework"
 	"go.goms.io/fleet/pkg/scheduler/queue"
 	"go.goms.io/fleet/pkg/utils/controller"
@@ -182,6 +183,7 @@ func (s *Scheduler) scheduleOnce(ctx context.Context) {
 		klog.ErrorS(err, "Failed to run scheduling cycle", "clusterResourcePlacement", crpRef)
 		// Requeue for later processing.
 		s.queue.AddRateLimited(crpName)
+		observeMetric(startTime, true)
 		return
 	}
 
@@ -203,6 +205,7 @@ func (s *Scheduler) scheduleOnce(ctx context.Context) {
 		// any delay to the requeues.
 		s.queue.Add(crpName)
 	}
+	observeMetric(startTime, false)
 }
 
 // Run starts the scheduler.
@@ -341,4 +344,13 @@ func (s *Scheduler) addSchedulerCleanUpFinalizer(ctx context.Context, crp *fleet
 	}
 
 	return nil
+}
+
+func observeMetric(startTime time.Time, isLoopFailed bool) {
+	duration := time.Since(startTime).Milliseconds()
+	// Cap the duration to avoid outliers.
+	if duration > (time.Second * 20).Milliseconds() {
+		duration = (time.Second * 20).Milliseconds()
+	}
+	metrics.SchedulingLoopDuration.WithLabelValues(fmt.Sprintf("%t", isLoopFailed)).Observe(float64(duration))
 }
