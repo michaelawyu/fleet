@@ -33,8 +33,9 @@ spec:
             - --hub-api-qps={{ .Values.hubAPIQPS }}
             - --hub-api-burst={{ .Values.hubAPIBurst }}
             - --concurrent-cluster-placement-syncs={{ .Values.concurrentClusterPlacementSyncs }}
-            - --concurrent-member-cluster-syncs={{ .Values.concurrentMemberClusterSyncs }}
+            - --concurrent-rollout-syncs={{ .Values.concurrentRolloutSyncs }}
             - --concurrent-resource-change-syncs={{ .Values.ConcurrentResourceChangeSyncs }}
+            - --log_file_max_size={{ .Values.logFileMaxSize }}
           ports:
             - name: metrics
               containerPort: 8080

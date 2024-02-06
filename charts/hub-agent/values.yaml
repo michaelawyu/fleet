@@ -38,5 +38,6 @@ enableV1Beta1APIs: false
 hubAPIQPS: 20
 hubAPIBurst: 100
 concurrentClusterPlacementSyncs: 1
-concurrentMemberClusterSyncs: 1
+concurrentRolloutSyncs: 1
 ConcurrentResourceChangeSyncs: 20
+logFileMaxSize: 1800
