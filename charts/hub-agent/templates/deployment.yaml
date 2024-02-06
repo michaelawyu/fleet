@@ -34,7 +34,7 @@ spec:
             - --hub-api-burst={{ .Values.hubAPIBurst }}
             - --concurrent-cluster-placement-syncs={{ .Values.concurrentClusterPlacementSyncs }}
             - --concurrent-member-cluster-syncs={{ .Values.concurrentMemberClusterSyncs }}
-            - --concurrent-cluster-syncs={{ .Values.concurrentClusterSyncs }}
+            - --concurrent-resource-change-syncs={{ .Values.ConcurrentResourceChangeSyncs }}
           ports:
             - name: metrics
               containerPort: 8080
