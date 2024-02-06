@@ -34,3 +34,9 @@ affinity: {}
 
 enableV1Alpha1APIs: true
 enableV1Beta1APIs: false
+
+hubAPIQPS: 20
+hubAPIBurst: 100
+concurrentClusterPlacementSyncs: 1
+concurrentMemberClusterSyncs: 1
+concurrentClusterSyncs: 20
