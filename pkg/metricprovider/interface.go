@@ -8,6 +8,8 @@ Licensed under the MIT license.
 package metricprovider
 
 import (
+	"context"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 
@@ -32,8 +34,13 @@ type MetricCollectionResponse struct {
 // MetricProvider is the interface that every metric provider must implement.
 type MetricProvider interface {
 	// Collect is called periodically by the Fleet member agent to collect metrics.
-	Collect() MetricCollectionResponse
+	//
+	// Note that this call should complete promptly. Fleet member agent will cancel the
+	// context if the call does not complete in time.
+	Collect(ctx context.Context) MetricCollectionResponse
 	// Start is called when the Fleet member agent starts up to initialize the metric provider.
 	// This call should not block.
-	Start(config *rest.Config) error
+	//
+	// Note that Fleet member agent will cancel the context when it exits.
+	Start(ctx context.Context, config *rest.Config) error
 }
