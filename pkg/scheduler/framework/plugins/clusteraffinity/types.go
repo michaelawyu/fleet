@@ -13,14 +13,28 @@ import (
 	placementv1beta1 "go.goms.io/fleet/apis/placement/v1beta1"
 )
 
-// affinityTerm is a processed version of ClusterSelectorTerm.
-type affinityTerm struct {
-	selector labels.Selector
+// metricSelector wraps the MetricMatcher API type in a struct that implements specific methods
+// that help match metric requirements and/or preferences against clusters.
+type metricSelector struct {
+	metricMatchers []placementv1beta1.MetricMatcher
 }
 
-// Matches returns true if the cluster matches the label selector.
+func (ms *metricSelector) Matches(cluster *clusterv1beta1.MemberCluster) (bool, error) {
+	for _, matcher := range ms.metricMatchers {
+		mv, ok := cluster.Status.Metrics[clusterv1beta1.MetricName(matcher.Name)]
+	}
+}
+
+// affinityTerm is a processed version of ClusterSelectorTerm.
+type affinityTerm struct {
+	lbls labels.Selector
+	mets metricSelector
+}
+
+// Matches returns true if the cluster matches the specified selectors (label selectors and/or
+// metric selectors).
 func (at *affinityTerm) Matches(cluster *clusterv1beta1.MemberCluster) bool {
-	return at.selector.Matches(labels.Set(cluster.Labels))
+	return at.lbls.Matches(labels.Set(cluster.Labels)) && at.mets.Matches(cluster)
 }
 
 // AffinityTerms is a "processed" representation of []ClusterSelectorTerms.
