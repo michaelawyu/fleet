@@ -84,7 +84,7 @@ func TestPreScore(t *testing.T) {
 					{
 						weight: 5,
 						affinityTerm: affinityTerm{
-							selector: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
+							lbls: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
 						},
 					},
 				},
@@ -143,13 +143,13 @@ func TestPluginScore(t *testing.T) {
 				preferredAffinityTerms: []preferredAffinityTerm{
 					{
 						affinityTerm: affinityTerm{
-							selector: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
+							lbls: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
 						},
 						weight: 5,
 					},
 					{
 						affinityTerm: affinityTerm{
-							selector: labels.SelectorFromSet(map[string]string{}),
+							lbls: labels.SelectorFromSet(map[string]string{}),
 						},
 						weight: -8,
 					},

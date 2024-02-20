@@ -130,7 +130,7 @@ func TestPreFilter(t *testing.T) {
 					{
 						weight: 5,
 						affinityTerm: affinityTerm{
-							selector: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
+							lbls: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
 						},
 					},
 				},
@@ -183,7 +183,7 @@ func TestPreFilter(t *testing.T) {
 			wantPluginState: &pluginState{
 				requiredAffinityTerms: []affinityTerm{
 					{
-						selector: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
+						lbls: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
 					},
 				},
 				preferredAffinityTerms: []preferredAffinityTerm{},
@@ -230,14 +230,14 @@ func TestPreFilter(t *testing.T) {
 			wantPluginState: &pluginState{
 				requiredAffinityTerms: []affinityTerm{
 					{
-						selector: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
+						lbls: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
 					},
 				},
 				preferredAffinityTerms: []preferredAffinityTerm{
 					{
 						weight: 5,
 						affinityTerm: affinityTerm{
-							selector: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
+							lbls: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
 						},
 					},
 				},
@@ -293,7 +293,7 @@ func TestFilter(t *testing.T) {
 			ps: &pluginState{
 				requiredAffinityTerms: []affinityTerm{
 					{
-						selector: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
+						lbls: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
 					},
 				},
 			},
@@ -313,7 +313,7 @@ func TestFilter(t *testing.T) {
 			ps: &pluginState{
 				requiredAffinityTerms: []affinityTerm{
 					{
-						selector: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
+						lbls: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
 					},
 				},
 			},

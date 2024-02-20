@@ -66,8 +66,14 @@ func (p *Plugin) Score(
 		// state has been set at the PreFilter extension point.
 		return nil, framework.FromError(err, p.Name(), "failed to read plugin state")
 	}
+
+	// Score the cluster.
+	s, err := ps.preferredAffinityTerms.Score(cluster)
+	if err != nil {
+		return nil, framework.FromError(err, p.Name(), "failed to score cluster using preferred affinity terms")
+	}
 	score = &framework.ClusterScore{
-		AffinityScore: int(ps.preferredAffinityTerms.Score(cluster)),
+		AffinityScore: int(s),
 	}
 	// All done.
 	return score, nil

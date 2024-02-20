@@ -335,7 +335,13 @@ type MetricMatcher struct {
 // MetricSelector helps user specify metric requirements when picking clusters for resource
 // placement.
 type MetricSelector struct {
-	// MatchMetrics is an array of MetricMatchers. The requirements are AND'd.
+	// MatchMetrics is an array of MetricMatchers.
+	//
+	// In one affinity term, you may choose to specify requirements/preferences based on
+	// multiple metrics. These requirements will be AND'd. However, when weight interpolation
+	// is enabled, only one metric can be specified. For cases where you'd like to use both
+	// weight interpolation and multiple metrics, consider breaking down the weights, and
+	// specifying multiple cluster selector terms.
 	// +optional
 	MatchMetrics []MetricMatcher `json:"matchMetrics"`
 }

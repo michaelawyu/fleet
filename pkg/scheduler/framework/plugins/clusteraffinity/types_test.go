@@ -6,9 +6,13 @@ Licensed under the MIT license.
 package clusteraffinity
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 
@@ -30,7 +34,7 @@ func TestMatches(t *testing.T) {
 		{
 			name: "matched cluster",
 			term: &affinityTerm{
-				selector: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
+				lbls: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
 			},
 			cluster: &clusterv1beta1.MemberCluster{
 				ObjectMeta: metav1.ObjectMeta{
@@ -45,7 +49,7 @@ func TestMatches(t *testing.T) {
 		{
 			name: "label value mismatched cluster",
 			term: &affinityTerm{
-				selector: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
+				lbls: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
 			},
 			cluster: &clusterv1beta1.MemberCluster{
 				ObjectMeta: metav1.ObjectMeta{
@@ -60,7 +64,7 @@ func TestMatches(t *testing.T) {
 		{
 			name: "empty terms which does not restrict the selection space",
 			term: &affinityTerm{
-				selector: labels.SelectorFromSet(map[string]string{}),
+				lbls: labels.SelectorFromSet(map[string]string{}),
 			},
 			cluster: &clusterv1beta1.MemberCluster{
 				ObjectMeta: metav1.ObjectMeta{
@@ -75,7 +79,7 @@ func TestMatches(t *testing.T) {
 		{
 			name: "label does not exist in cluster",
 			term: &affinityTerm{
-				selector: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
+				lbls: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
 			},
 			cluster: &clusterv1beta1.MemberCluster{
 				ObjectMeta: metav1.ObjectMeta{
@@ -90,7 +94,10 @@ func TestMatches(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := tc.term.Matches(tc.cluster)
+			got, err := tc.term.Matches(tc.cluster)
+			if err != nil {
+				t.Fatalf("Matches(), got error %v, want no error", err)
+			}
 			if got != tc.want {
 				t.Fatalf("Matches()=%v, want %v", got, tc.want)
 			}
@@ -109,7 +116,7 @@ func TestAffinityTermsMatches(t *testing.T) {
 			name: "matched cluster with single term",
 			terms: []affinityTerm{
 				{
-					selector: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
+					lbls: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
 				},
 			},
 			cluster: &clusterv1beta1.MemberCluster{
@@ -126,10 +133,10 @@ func TestAffinityTermsMatches(t *testing.T) {
 			name: "matched cluster with multiple terms",
 			terms: []affinityTerm{
 				{
-					selector: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
+					lbls: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
 				},
 				{
-					selector: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
+					lbls: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
 				},
 			},
 			cluster: &clusterv1beta1.MemberCluster{
@@ -146,10 +153,10 @@ func TestAffinityTermsMatches(t *testing.T) {
 			name: "matched cluster with empty terms which does not restrict the selection space",
 			terms: []affinityTerm{
 				{
-					selector: labels.SelectorFromSet(map[string]string{}),
+					lbls: labels.SelectorFromSet(map[string]string{}),
 				},
 				{
-					selector: labels.SelectorFromSet(map[string]string{"region": "us-east"}),
+					lbls: labels.SelectorFromSet(map[string]string{"region": "us-east"}),
 				},
 			},
 			cluster: &clusterv1beta1.MemberCluster{
@@ -166,7 +173,7 @@ func TestAffinityTermsMatches(t *testing.T) {
 			name: "not matched cluster",
 			terms: []affinityTerm{
 				{
-					selector: labels.SelectorFromSet(map[string]string{"region": "us-east"}),
+					lbls: labels.SelectorFromSet(map[string]string{"region": "us-east"}),
 				},
 			},
 			cluster: &clusterv1beta1.MemberCluster{
@@ -195,7 +202,10 @@ func TestAffinityTermsMatches(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := tc.terms.Matches(tc.cluster)
+			got, err := tc.terms.Matches(tc.cluster)
+			if err != nil {
+				t.Fatalf("Matches(), got error %v, want no error", err)
+			}
 			if got != tc.want {
 				t.Fatalf("Matches()=%v, want %v", got, tc.want)
 			}
@@ -228,13 +238,13 @@ func TestScore(t *testing.T) {
 			terms: []preferredAffinityTerm{
 				{
 					affinityTerm: affinityTerm{
-						selector: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
+						lbls: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
 					},
 					weight: 5,
 				},
 				{
 					affinityTerm: affinityTerm{
-						selector: labels.SelectorFromSet(map[string]string{}),
+						lbls: labels.SelectorFromSet(map[string]string{}),
 					},
 					weight: -8,
 				},
@@ -254,13 +264,13 @@ func TestScore(t *testing.T) {
 			terms: []preferredAffinityTerm{
 				{
 					affinityTerm: affinityTerm{
-						selector: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
+						lbls: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
 					},
 					weight: 5,
 				},
 				{
 					affinityTerm: affinityTerm{
-						selector: labels.SelectorFromSet(map[string]string{"zone": "zone1"}),
+						lbls: labels.SelectorFromSet(map[string]string{"zone": "zone1"}),
 					},
 					weight: -8,
 				},
@@ -281,13 +291,13 @@ func TestScore(t *testing.T) {
 			terms: []preferredAffinityTerm{
 				{
 					affinityTerm: affinityTerm{
-						selector: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
+						lbls: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
 					},
 					weight: 5,
 				},
 				{
 					affinityTerm: affinityTerm{
-						selector: labels.SelectorFromSet(map[string]string{"zone": "zone1"}),
+						lbls: labels.SelectorFromSet(map[string]string{"zone": "zone1"}),
 					},
 					weight: -8,
 				},
@@ -306,7 +316,10 @@ func TestScore(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := tc.terms.Score(tc.cluster)
+			got, err := tc.terms.Score(tc.cluster)
+			if err != nil {
+				t.Fatalf("Score(), got error %v, want no error", err)
+			}
 			if got != tc.want {
 				t.Fatalf("Score()=%v, want %v", got, tc.want)
 			}
@@ -361,7 +374,7 @@ func TestNewAffinityTerms(t *testing.T) {
 			},
 			want: []affinityTerm{
 				{
-					selector: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
+					lbls: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
 				},
 			},
 		},
@@ -436,7 +449,7 @@ func TestNewPreferredAffinityTerms(t *testing.T) {
 				{
 					weight: 5,
 					affinityTerm: affinityTerm{
-						selector: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
+						lbls: labels.SelectorFromSet(map[string]string{"region": "us-west"}),
 					},
 				},
 			},
@@ -452,5 +465,354 @@ func TestNewPreferredAffinityTerms(t *testing.T) {
 				t.Errorf("NewPreferredAffinityTerms() preferredAffinityTerm mismatch (-want, +got):\n%s", diff)
 			}
 		})
+	}
+}
+
+// TestExtractResourceMetricDataFrom tests the extractResourceMetricDataFrom function.
+func TestExtractResourceMetricDataFrom(t *testing.T) {
+	ru := &clusterv1beta1.ResourceUsage{
+		Capacity: corev1.ResourceList{
+			corev1.ResourceCPU:              resource.MustParse("12"),
+			corev1.ResourceMemory:           resource.MustParse("24Gi"),
+			corev1.ResourceStorage:          resource.MustParse("100Gi"),
+			corev1.ResourceEphemeralStorage: resource.MustParse("100Gi"),
+		},
+		Allocatable: corev1.ResourceList{
+			corev1.ResourceCPU:              resource.MustParse("10"),
+			corev1.ResourceMemory:           resource.MustParse("20Gi"),
+			corev1.ResourceStorage:          resource.MustParse("90Gi"),
+			corev1.ResourceEphemeralStorage: resource.MustParse("90Gi"),
+		},
+		Available: corev1.ResourceList{
+			corev1.ResourceCPU:              resource.MustParse("4"),
+			corev1.ResourceMemory:           resource.MustParse("4Gi"),
+			corev1.ResourceStorage:          resource.MustParse("40Gi"),
+			corev1.ResourceEphemeralStorage: resource.MustParse("24Gi"),
+		},
+	}
+
+	testCases := []struct {
+		name                 string
+		usage                *clusterv1beta1.ResourceUsage
+		label                string
+		wantResourceQuantity resource.Quantity
+		wantErrMsg           string
+	}{
+		{
+			name:                 "cpu resource metric (allocatable)",
+			usage:                ru,
+			label:                "allocatable-cpu",
+			wantResourceQuantity: resource.MustParse("10"),
+		},
+		{
+			name:                 "cpu resource metric (available)",
+			usage:                ru,
+			label:                "available-cpu",
+			wantResourceQuantity: resource.MustParse("4"),
+		},
+		{
+			name:                 "memory resource metric (allocatable)",
+			usage:                ru,
+			label:                "allocatable-memory",
+			wantResourceQuantity: resource.MustParse("20Gi"),
+		},
+		{
+			name:                 "memory resource metric (available)",
+			usage:                ru,
+			label:                "available-memory",
+			wantResourceQuantity: resource.MustParse("4Gi"),
+		},
+		{
+			name:       "unavailable capacity type",
+			usage:      ru,
+			label:      "mincapacity-cpu",
+			wantErrMsg: "failed to look up resource metric name mincapacity-cpu: the capacity type does not exist",
+		},
+		{
+			name:       "unavailable resource type",
+			usage:      ru,
+			label:      "allocatable-megagpu",
+			wantErrMsg: "failed to look up resource metric name allocatable-megagpu: the resource name does not exist",
+		},
+		{
+			name:       "invalid metric name (no separator)",
+			usage:      ru,
+			label:      "allocatablecpu",
+			wantErrMsg: "failed to parse resource metric name allocatablecpu: the name is not of the correct format",
+		},
+		{
+			name:       "invalid metric name (no capacity type)",
+			usage:      ru,
+			label:      "-cpu",
+			wantErrMsg: "failed to parse resource metric name -cpu: the name is not of the correct format",
+		},
+		{
+			name:       "invalid metric name (no resource type)",
+			usage:      ru,
+			label:      "allocatable-",
+			wantErrMsg: "failed to parse resource metric name allocatable-: the name is not of the correct format",
+		},
+		{
+			name:       "no resource usage",
+			label:      "allocatable-cpu",
+			wantErrMsg: "failed to look up resource metric: the resource usage is nil",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotResourceQuantity, err := extractResourceMetricDataFrom(tc.usage, tc.label)
+			if err != nil {
+				if tc.wantErrMsg == "" {
+					t.Fatalf("extractResourceMetricDataFrom(), got error %v, want no error", err)
+				}
+
+				if !strings.HasPrefix(err.Error(), tc.wantErrMsg) {
+					t.Fatalf("extractResourceMetricDataFrom(), got error %v, want %v", err.Error(), tc.wantErrMsg)
+				}
+				return
+			}
+
+			if !tc.wantResourceQuantity.Equal(gotResourceQuantity) {
+				t.Fatalf("extractResourceMetricDataFrom() = %v, want %v", gotResourceQuantity, tc.wantResourceQuantity)
+			}
+		})
+	}
+}
+
+// TestMatchResourceMetricWith tests the matchResourceMetricWith function.
+func TestMatchResourceMetricWith(t *testing.T) {
+	cluster1 := &clusterv1beta1.MemberCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: clusterName,
+		},
+		Spec: clusterv1beta1.MemberClusterSpec{},
+		Status: clusterv1beta1.MemberClusterStatus{
+			ResourceUsage: clusterv1beta1.ResourceUsage{
+				Allocatable: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("8"),
+					corev1.ResourceMemory: resource.MustParse("20Gi"),
+				},
+			},
+		},
+	}
+
+	testCases := []struct {
+		name       string
+		matcher    *placementv1beta1.MetricMatcher
+		cluster    *clusterv1beta1.MemberCluster
+		wantRes    bool
+		wantErrMsg string
+	}{
+		{
+			name: "single range (cpu), passed (> minimum and < maximum)",
+			matcher: &placementv1beta1.MetricMatcher{
+				Name: fmt.Sprintf("%s%s", resourceMetricLabelPrefix, "allocatable-cpu"),
+				Ranges: []placementv1beta1.MetricRange{
+					{
+						Minimum: "5",
+						Maximum: "9.5",
+					},
+				},
+			},
+			cluster: cluster1,
+			wantRes: true,
+		},
+		{
+			name: "single range (memory), passed (> minimum and < maximum)",
+			matcher: &placementv1beta1.MetricMatcher{
+				Name: fmt.Sprintf("%s%s", resourceMetricLabelPrefix, "allocatable-memory"),
+				Ranges: []placementv1beta1.MetricRange{
+					{
+						Minimum: "12Gi",
+						Maximum: "24Gi",
+					},
+				},
+			},
+			cluster: cluster1,
+			wantRes: true,
+		},
+		{
+			name: "single range (cpu), failed (minimum only, > minimum)",
+			matcher: &placementv1beta1.MetricMatcher{
+				Name: fmt.Sprintf("%s%s", resourceMetricLabelPrefix, "allocatable-cpu"),
+				Ranges: []placementv1beta1.MetricRange{
+					{
+						Minimum: "5",
+					},
+				},
+			},
+			cluster: cluster1,
+			wantRes: true,
+		},
+		{
+			name: "single range (cpu), failed (maximum only, < maximum)",
+			matcher: &placementv1beta1.MetricMatcher{
+				Name: fmt.Sprintf("%s%s", resourceMetricLabelPrefix, "allocatable-cpu"),
+				Ranges: []placementv1beta1.MetricRange{
+					{
+						Maximum: "9.5",
+					},
+				},
+			},
+			wantRes: true,
+			cluster: cluster1,
+		},
+		{
+			name: "single range, failed (less than minimum)",
+			matcher: &placementv1beta1.MetricMatcher{
+				Name: fmt.Sprintf("%s%s", resourceMetricLabelPrefix, "allocatable-cpu"),
+				Ranges: []placementv1beta1.MetricRange{
+					{
+						Minimum: "10",
+					},
+				},
+			},
+			cluster: cluster1,
+		},
+		{
+			name: "single range, failed (more than maximum)",
+			matcher: &placementv1beta1.MetricMatcher{
+				Name: fmt.Sprintf("%s%s", resourceMetricLabelPrefix, "allocatable-cpu"),
+				Ranges: []placementv1beta1.MetricRange{
+					{
+						Maximum: "7",
+					},
+				},
+			},
+			cluster: cluster1,
+		},
+		{
+			name: "single range, passed (equal to minimum)",
+			matcher: &placementv1beta1.MetricMatcher{
+				Name: fmt.Sprintf("%s%s", resourceMetricLabelPrefix, "allocatable-cpu"),
+				Ranges: []placementv1beta1.MetricRange{
+					{
+						Minimum: "8",
+						Maximum: "10",
+					},
+				},
+			},
+			cluster: cluster1,
+			wantRes: true,
+		},
+		{
+			name: "single range, passed (equal to maximum)",
+			matcher: &placementv1beta1.MetricMatcher{
+				Name: fmt.Sprintf("%s%s", resourceMetricLabelPrefix, "allocatable-cpu"),
+				Ranges: []placementv1beta1.MetricRange{
+					{
+						Minimum: "5",
+						Maximum: "8",
+					},
+				},
+			},
+			cluster: cluster1,
+			wantRes: true,
+		},
+		{
+			name: "multiple ranges, passed",
+			matcher: &placementv1beta1.MetricMatcher{
+				Name: fmt.Sprintf("%s%s", resourceMetricLabelPrefix, "allocatable-cpu"),
+				Ranges: []placementv1beta1.MetricRange{
+					{
+						Maximum: "5",
+					},
+					{
+						Minimum: "6",
+						Maximum: "9",
+					},
+					{
+						Minimum: "15",
+					},
+				},
+			},
+			cluster: cluster1,
+			wantRes: true,
+		},
+		{
+			name: "multiple ranges, failed",
+			matcher: &placementv1beta1.MetricMatcher{
+				Name: fmt.Sprintf("%s%s", resourceMetricLabelPrefix, "allocatable-cpu"),
+				Ranges: []placementv1beta1.MetricRange{
+					{
+						Maximum: "5",
+					},
+					{
+						Minimum: "15",
+					},
+				},
+			},
+			cluster: cluster1,
+		},
+		{
+			name: "invalid range (minimum)",
+			matcher: &placementv1beta1.MetricMatcher{
+				Name: fmt.Sprintf("%s%s", resourceMetricLabelPrefix, "allocatable-cpu"),
+				Ranges: []placementv1beta1.MetricRange{
+					{
+						Minimum: "invalid",
+					},
+				},
+			},
+			cluster:    cluster1,
+			wantErrMsg: "failed to match metric selector resources.kubernetes-fleet.io/allocatable-cpu: minimum value invalid cannot be parsed as a resource quantity",
+		},
+		{
+			name: "invalid range (maximum)",
+			matcher: &placementv1beta1.MetricMatcher{
+				Name: fmt.Sprintf("%s%s", resourceMetricLabelPrefix, "allocatable-cpu"),
+				Ranges: []placementv1beta1.MetricRange{
+					{
+						Maximum: "invalid",
+					},
+				},
+			},
+			cluster:    cluster1,
+			wantErrMsg: "failed to match metric selector resources.kubernetes-fleet.io/allocatable-cpu: maximum value invalid cannot be parsed as a resource quantity",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			res, err := matchResourceMetricWith(tc.matcher, tc.cluster)
+			if err != nil {
+				if tc.wantErrMsg == "" {
+					t.Fatalf("matchResourceMetricWith(), got error %v, want no error", err)
+				}
+
+				if !strings.HasPrefix(err.Error(), tc.wantErrMsg) {
+					t.Fatalf("matchResourceMetricWith(), got error %v, want %v", err.Error(), tc.wantErrMsg)
+				}
+
+				return
+			}
+
+			if res != tc.wantRes {
+				t.Fatalf("matchResourceMetricWith() = %v, want %v", res, tc.wantRes)
+			}
+		})
+	}
+}
+
+// TestMatchNonResourceMetricWith tests the matchNonResourceMetricWith function.
+func TestMatchNonResourceMetricWith(t *testing.T) {
+	testCases := []struct {
+		name string
+	}{}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {})
+	}
+}
+
+// TestMetricSelectorMatches tests the metricSelector.Matches method.
+func TestMetricSelectorMatches(t *testing.T) {
+	testCases := []struct {
+		name string
+	}{}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {})
 	}
 }

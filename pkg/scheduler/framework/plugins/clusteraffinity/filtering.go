@@ -76,8 +76,14 @@ func (p *Plugin) Filter(
 		return framework.FromError(err, p.Name(), "failed to read plugin state")
 	}
 
-	if ps.requiredAffinityTerms.Matches(cluster) {
-		// all done.
+	isMatched, err := ps.requiredAffinityTerms.Matches(cluster)
+	if err != nil {
+		// An error has occurred when matching the cluster with the required affinity terms.
+		return framework.FromError(err, p.Name(), "failed to match with the required cluster affinity terms")
+	}
+	if isMatched {
+		// The cluster matches the required affinity terms; consider it eligible for resource
+		// placement within the scope of this plugin.
 		return nil
 	}
 	// If the requiredAffinityTerms is 0, the prefilter should skip the filter state.

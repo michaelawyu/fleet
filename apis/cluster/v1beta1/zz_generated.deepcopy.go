@@ -284,6 +284,13 @@ func (in *ResourceUsage) DeepCopyInto(out *ResourceUsage) {
 			(*out)[key] = val.DeepCopy()
 		}
 	}
+	if in.Available != nil {
+		in, out := &in.Available, &out.Available
+		*out = make(v1.ResourceList, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val.DeepCopy()
+		}
+	}
 	in.ObservationTime.DeepCopyInto(&out.ObservationTime)
 }
 
