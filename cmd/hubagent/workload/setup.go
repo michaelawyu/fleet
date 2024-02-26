@@ -7,6 +7,7 @@ package workload
 
 import (
 	"context"
+	"math"
 	"strings"
 	"sync"
 
@@ -51,6 +52,8 @@ const (
 
 	resourceChangeControllerName = "resource-change-controller"
 	mcPlacementControllerName    = "memberCluster-placement-controller"
+
+	schedulerQueueName = "scheduler-queue"
 )
 
 var (
@@ -202,8 +205,9 @@ func SetupControllers(ctx context.Context, wg *sync.WaitGroup, mgr ctrl.Manager,
 		// Set up  a new controller to do rollout resources according to CRP rollout strategy
 		klog.Info("Setting up rollout controller")
 		if err := (&rollout.Reconciler{
-			Client:         mgr.GetClient(),
-			UncachedReader: mgr.GetAPIReader(),
+			Client:                  mgr.GetClient(),
+			UncachedReader:          mgr.GetAPIReader(),
+			MaxConcurrentReconciles: int(math.Ceil(float64(opts.MaxFleetSizeSupported) / 34)), //3 rollout reconciler routine per 100 member clusters
 		}).SetupWithManager(mgr); err != nil {
 			klog.ErrorS(err, "Unable to set up rollout controller")
 			return err
@@ -212,7 +216,8 @@ func SetupControllers(ctx context.Context, wg *sync.WaitGroup, mgr ctrl.Manager,
 		// Set up the work generator
 		klog.Info("Setting up work generator")
 		if err := (&workgenerator.Reconciler{
-			Client: mgr.GetClient(),
+			Client:                  mgr.GetClient(),
+			MaxConcurrentReconciles: int(math.Ceil(float64(opts.MaxFleetSizeSupported) / 10)), //one work generator reconciler routine per 10 member clusters,
 		}).SetupWithManager(mgr); err != nil {
 			klog.ErrorS(err, "Unable to set up work generator")
 			return err
@@ -222,7 +227,9 @@ func SetupControllers(ctx context.Context, wg *sync.WaitGroup, mgr ctrl.Manager,
 		klog.Info("Setting up scheduler")
 		defaultProfile := profile.NewDefaultProfile()
 		defaultFramework := framework.NewFramework(defaultProfile, mgr)
-		defaultSchedulingQueue := queue.NewSimpleClusterResourcePlacementSchedulingQueue()
+		defaultSchedulingQueue := queue.NewSimpleClusterResourcePlacementSchedulingQueue(
+			queue.WithName(schedulerQueueName),
+		)
 		defaultScheduler := scheduler.NewScheduler("DefaultScheduler", defaultFramework, defaultSchedulingQueue, mgr)
 		klog.Info("Starting the scheduler")
 		// Scheduler must run in a separate goroutine as Run() is a blocking call.

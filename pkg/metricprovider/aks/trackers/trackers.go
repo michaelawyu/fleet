@@ -15,6 +15,11 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
+const (
+	AKSClusterNodeSKULabelName          = "beta.kubernetes.io/instance-type"
+	AKSClusterNodeSpotInstanceLabelName = "kubernetes.azure.com/scalesetpriority"
+)
+
 // supportedResourceNames is a list of resource names that the AKS metric provider supports.
 var supportedResourceNames []corev1.ResourceName = []corev1.ResourceName{
 	corev1.ResourceCPU,
@@ -23,8 +28,10 @@ var supportedResourceNames []corev1.ResourceName = []corev1.ResourceName{
 
 // NodeTracker helps track specific stats about nodes in a Kubernetes cluster, e.g., its count.
 type NodeTracker struct {
-	totalCapacity    corev1.ResourceList
-	totalAllocatable corev1.ResourceList
+	totalCapacity         corev1.ResourceList
+	totalAllocatable      corev1.ResourceList
+	perCPUCoreHourlyCost  float64
+	perGBMemoryHourlyCost float64
 
 	capacityByNode    map[string]corev1.ResourceList
 	allocatableByNode map[string]corev1.ResourceList
@@ -50,51 +57,17 @@ func NewNodeTracker() *NodeTracker {
 	return nt
 }
 
-// AddOrUpdate starts tracking a node or updates the stats about a node that has been
-// tracked.
-func (nt *NodeTracker) AddOrUpdate(node *corev1.Node) {
-	nt.mu.Lock()
-	defer nt.mu.Unlock()
+// trackSKU tracks the SKU of a node.
+//
+// Note that this method assumes that the access lock has been acquired.
+func (nt *NodeTracker) trackSKU(node *corev1.Node) {
 
-	rc, ok := nt.capacityByNode[node.Name]
-	if ok {
-		// The node's total capacity has been tracked.
-		//
-		// Typically, a node's total capacity is immutable after the node
-		// is created; here, the provider still performs a sanity check to avoid
-		// any inconsistencies.
-		for _, rn := range supportedResourceNames {
-			c1 := rc[rn]
-			c2 := node.Status.Capacity[rn]
-			if !c1.Equal(c2) {
-				// The reported total capacity has changed.
+}
 
-				// Update the total capacity of the cluster.
-				tc := nt.totalCapacity[rn]
-				tc.Sub(c1)
-				tc.Add(c2)
-				nt.totalCapacity[rn] = tc
-
-				// Update the tracked total capacity of the node.
-				rc[rn] = c2
-			}
-		}
-	} else {
-		rc = make(corev1.ResourceList)
-
-		// The node's total capacity has not been tracked.
-		for _, rn := range supportedResourceNames {
-			c := node.Status.Capacity[rn]
-			rc[rn] = c
-
-			tc := nt.totalCapacity[rn]
-			tc.Add(c)
-			nt.totalCapacity[rn] = tc
-		}
-
-		nt.capacityByNode[node.Name] = rc
-	}
-
+// trackAllocatableCapacity tracks the allocatable capacity of a node.
+//
+// Note that this method assumes that the access lock has been acquired.
+func (nt *NodeTracker) trackAllocatableCapacity(node *corev1.Node) {
 	ra, ok := nt.allocatableByNode[node.Name]
 	if ok {
 		// The node's allocatable capacity has been tracked.
@@ -133,6 +106,64 @@ func (nt *NodeTracker) AddOrUpdate(node *corev1.Node) {
 
 		nt.allocatableByNode[node.Name] = ra
 	}
+}
+
+// trackTotalCapacity tracks the total capacity of a node.
+//
+// Note that this method assumes that the access lock has been acquired.
+func (nt *NodeTracker) trackTotalCapacity(node *corev1.Node) {
+	rc, ok := nt.capacityByNode[node.Name]
+	if ok {
+		// The node's total capacity has been tracked.
+		//
+		// Typically, a node's total capacity is immutable after the node
+		// is created; here, the provider still performs a sanity check to avoid
+		// any inconsistencies.
+		for _, rn := range supportedResourceNames {
+			c1 := rc[rn]
+			c2 := node.Status.Capacity[rn]
+			if !c1.Equal(c2) {
+				// The reported total capacity has changed.
+
+				// Update the total capacity of the cluster.
+				tc := nt.totalCapacity[rn]
+				tc.Sub(c1)
+				tc.Add(c2)
+				nt.totalCapacity[rn] = tc
+
+				// Update the tracked total capacity of the node.
+				rc[rn] = c2
+			}
+		}
+	} else {
+		// The node's total capacity has not been tracked.
+		rc = make(corev1.ResourceList)
+
+		for _, rn := range supportedResourceNames {
+			c := node.Status.Capacity[rn]
+			rc[rn] = c
+
+			tc := nt.totalCapacity[rn]
+			tc.Add(c)
+			nt.totalCapacity[rn] = tc
+		}
+
+		nt.capacityByNode[node.Name] = rc
+	}
+}
+
+// AddOrUpdate starts tracking a node or updates the stats about a node that has been
+// tracked.
+func (nt *NodeTracker) AddOrUpdate(node *corev1.Node) {
+	nt.mu.Lock()
+	defer nt.mu.Unlock()
+
+	// Track the total capacity of the node.
+	nt.trackTotalCapacity(node)
+	// Track the allocatable capacity of the node.
+	nt.trackAllocatableCapacity(node)
+	// Track the SKU of the node.
+	nt.trackSKU(node)
 }
 
 // Remove stops tracking a node.

@@ -8,7 +8,6 @@ package clusterresourceplacement
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"sort"
@@ -21,7 +20,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
-	"k8s.io/apimachinery/pkg/util/json"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -32,6 +30,7 @@ import (
 	"go.goms.io/fleet/pkg/utils/condition"
 	"go.goms.io/fleet/pkg/utils/controller"
 	"go.goms.io/fleet/pkg/utils/labels"
+	"go.goms.io/fleet/pkg/utils/resource"
 )
 
 // The max size of an object in k8s is 1.5MB because of ETCD limit https://etcd.io/docs/v3.3/dev-guide/limit/.
@@ -252,7 +251,7 @@ func (r *Reconciler) getOrCreateClusterSchedulingPolicySnapshot(ctx context.Cont
 	if schedulingPolicy != nil {
 		schedulingPolicy.NumberOfClusters = nil // will exclude the numberOfClusters
 	}
-	policyHash, err := generatePolicyHash(schedulingPolicy)
+	policyHash, err := resource.HashOf(schedulingPolicy)
 	if err != nil {
 		klog.ErrorS(err, "Failed to generate policy hash of crp", "clusterResourcePlacement", crpKObj)
 		return nil, controller.NewUnexpectedBehaviorError(err)
@@ -346,7 +345,7 @@ func (r *Reconciler) deleteRedundantSchedulingPolicySnapshots(ctx context.Contex
 	if len(sortedList.Items)-revisionHistoryLimit > 0 {
 		// We always delete before creating a new snapshot, the snapshot size should never exceed the limit as there is
 		// no finalizer added and object should be deleted immediately.
-		klog.Warningf("The number of clusterSchedulingPolicySnapshots exceeds the revisionHistoryLimit and it should never happen", "clusterResourcePlacement", klog.KObj(crp), "numberOfSnapshots", len(sortedList.Items), "revisionHistoryLimit", revisionHistoryLimit)
+		klog.Warning("The number of clusterSchedulingPolicySnapshots exceeds the revisionHistoryLimit and it should never happen", "clusterResourcePlacement", klog.KObj(crp), "numberOfSnapshots", len(sortedList.Items), "revisionHistoryLimit", revisionHistoryLimit)
 	}
 
 	// In normal situation, The max of len(sortedList) should be revisionHistoryLimit.
@@ -404,13 +403,13 @@ func (r *Reconciler) deleteRedundantResourceSnapshots(ctx context.Context, crp *
 	if groupCounter-revisionHistoryLimit > 0 {
 		// We always delete before creating a new snapshot, the snapshot group size should never exceed the limit
 		// as there is no finalizer added and the object should be deleted immediately.
-		klog.Warningf("The number of clusterResourceSnapshot groups exceeds the revisionHistoryLimit and it should never happen", "clusterResourcePlacement", klog.KObj(crp), "numberOfSnapshotGroups", groupCounter, "revisionHistoryLimit", revisionHistoryLimit)
+		klog.Warning("The number of clusterResourceSnapshot groups exceeds the revisionHistoryLimit and it should never happen", "clusterResourcePlacement", klog.KObj(crp), "numberOfSnapshotGroups", groupCounter, "revisionHistoryLimit", revisionHistoryLimit)
 	}
 	return nil
 }
 
 func (r *Reconciler) getOrCreateClusterResourceSnapshot(ctx context.Context, crp *fleetv1beta1.ClusterResourcePlacement, envelopeObjCount int, resourceSnapshotSpec *fleetv1beta1.ResourceSnapshotSpec, revisionHistoryLimit int) (*fleetv1beta1.ClusterResourceSnapshot, error) {
-	resourceHash, err := generateResourceHash(resourceSnapshotSpec)
+	resourceHash, err := resource.HashOf(resourceSnapshotSpec)
 	crpKObj := klog.KObj(crp)
 	if err != nil {
 		klog.ErrorS(err, "Failed to generate resource hash of crp", "clusterResourcePlacement", crpKObj)
@@ -878,22 +877,6 @@ func parsePolicyIndexFromLabel(s *fleetv1beta1.ClusterSchedulingPolicySnapshot) 
 		return -1, fmt.Errorf("invalid policy index %q, error: %w", indexLabel, err)
 	}
 	return v, nil
-}
-
-func generatePolicyHash(policy *fleetv1beta1.PlacementPolicy) (string, error) {
-	jsonBytes, err := json.Marshal(policy)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("%x", sha256.Sum256(jsonBytes)), nil
-}
-
-func generateResourceHash(rs *fleetv1beta1.ResourceSnapshotSpec) (string, error) {
-	jsonBytes, err := json.Marshal(rs)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("%x", sha256.Sum256(jsonBytes)), nil
 }
 
 // parseResourceGroupHashFromAnnotation returns error when parsing the annotation which should never return error in production.
