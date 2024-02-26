@@ -8,6 +8,7 @@ package trackers
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -32,11 +33,41 @@ const (
 	containerName1 = "container-1"
 	containerName2 = "container-2"
 	containerName3 = "container-3"
+
+	nodeSKU1 = "Standard_1"
+	nodeSKU2 = "Standard_2"
+	nodeSKU3 = "Standard_3"
 )
 
 var (
-	ignoreNodeTrackerMutexField = cmpopts.IgnoreFields(NodeTracker{}, "mu")
-	ignorePodTrackerMutexField  = cmpopts.IgnoreFields(PodTracker{}, "mu")
+	currentTime = time.Now()
+)
+
+// dummyPricingProvider is a mock implementation that implements the PricingProvider interface.
+type dummyPricingProvider struct{}
+
+var _ PricingProvider = &dummyPricingProvider{}
+
+func (d *dummyPricingProvider) OnDemandPrice(instanceType string) (float64, bool) {
+	switch instanceType {
+	case nodeSKU1:
+		return 1.0, true
+	case nodeSKU2:
+		return 5.0, true
+	case nodeSKU3:
+		return 10.0, true
+	default:
+		return 0.0, false
+	}
+}
+
+func (d *dummyPricingProvider) LastUpdated() time.Time {
+	return currentTime
+}
+
+var (
+	ignoreNodeTrackerFields    = cmpopts.IgnoreFields(NodeTracker{}, "mu", "pp", "costLastUpdated")
+	ignorePodTrackerMutexField = cmpopts.IgnoreFields(PodTracker{}, "mu")
 
 	// This variable should only work with test cases that do not mutate the tracker.
 	nodeTrackerWith3Nodes = &NodeTracker{
@@ -76,6 +107,7 @@ var (
 				corev1.ResourceMemory: resource.MustParse("1.8Gi"),
 			},
 		},
+		pp: &dummyPricingProvider{},
 	}
 
 	// This variable should only work with test cases that do not mutate the tracker.
@@ -111,11 +143,14 @@ func TestNodeTrackerAddOrUpdateNode(t *testing.T) {
 	}{
 		{
 			name: "can track a single node",
-			nt:   NewNodeTracker(),
+			nt:   NewNodeTracker(&dummyPricingProvider{}),
 			nodes: []*corev1.Node{
 				{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: nodeName1,
+						Labels: map[string]string{
+							AKSClusterNodeSKULabelName: nodeSKU1,
+						},
 					},
 					Spec: corev1.NodeSpec{},
 					Status: corev1.NodeStatus{
@@ -151,15 +186,28 @@ func TestNodeTrackerAddOrUpdateNode(t *testing.T) {
 						corev1.ResourceMemory: resource.MustParse("15Gi"),
 					},
 				},
+				perCPUCoreHourlyCost:  0.25,
+				perGBMemoryHourlyCost: 0.0625,
+				nodeSetBySKU: map[string]NodeSet{
+					"Standard_1": {
+						"node-1": true,
+					},
+				},
+				skuByNode: map[string]string{
+					"node-1": "Standard_1",
+				},
 			},
 		},
 		{
 			name: "can track multiple nodes",
-			nt:   NewNodeTracker(),
+			nt:   NewNodeTracker(&dummyPricingProvider{}),
 			nodes: []*corev1.Node{
 				{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: nodeName1,
+						Labels: map[string]string{
+							AKSClusterNodeSKULabelName: nodeSKU1,
+						},
 					},
 					Spec: corev1.NodeSpec{},
 					Status: corev1.NodeStatus{
@@ -176,6 +224,9 @@ func TestNodeTrackerAddOrUpdateNode(t *testing.T) {
 				{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: nodeName2,
+						Labels: map[string]string{
+							AKSClusterNodeSKULabelName: nodeSKU2,
+						},
 					},
 					Spec: corev1.NodeSpec{},
 					Status: corev1.NodeStatus{
@@ -192,6 +243,9 @@ func TestNodeTrackerAddOrUpdateNode(t *testing.T) {
 				{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: nodeName3,
+						Labels: map[string]string{
+							AKSClusterNodeSKULabelName: nodeSKU3,
+						},
 					},
 					Spec: corev1.NodeSpec{},
 					Status: corev1.NodeStatus{
@@ -243,6 +297,24 @@ func TestNodeTrackerAddOrUpdateNode(t *testing.T) {
 						corev1.ResourceMemory: resource.MustParse("15Gi"),
 					},
 				},
+				perCPUCoreHourlyCost:  1.777,
+				perGBMemoryHourlyCost: 0.444,
+				nodeSetBySKU: map[string]NodeSet{
+					nodeSKU1: {
+						nodeName1: true,
+					},
+					nodeSKU2: {
+						nodeName2: true,
+					},
+					nodeSKU3: {
+						nodeName3: true,
+					},
+				},
+				skuByNode: map[string]string{
+					nodeName1: nodeSKU1,
+					nodeName2: nodeSKU2,
+					nodeName3: nodeSKU3,
+				},
 			},
 		},
 		{
@@ -268,11 +340,25 @@ func TestNodeTrackerAddOrUpdateNode(t *testing.T) {
 						corev1.ResourceMemory: resource.MustParse("4Gi"),
 					},
 				},
+				perCPUCoreHourlyCost:  0.5,
+				perGBMemoryHourlyCost: 0.125,
+				nodeSetBySKU: map[string]NodeSet{
+					nodeSKU1: {
+						nodeName1: true,
+					},
+				},
+				skuByNode: map[string]string{
+					nodeName1: nodeSKU1,
+				},
+				pp: &dummyPricingProvider{},
 			},
 			nodes: []*corev1.Node{
 				{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: nodeName1,
+						Labels: map[string]string{
+							AKSClusterNodeSKULabelName: nodeSKU1,
+						},
 					},
 					Spec: corev1.NodeSpec{},
 					Status: corev1.NodeStatus{
@@ -308,6 +394,16 @@ func TestNodeTrackerAddOrUpdateNode(t *testing.T) {
 						corev1.ResourceMemory: resource.MustParse("4Gi"),
 					},
 				},
+				perCPUCoreHourlyCost:  0.5,
+				perGBMemoryHourlyCost: 0.125,
+				nodeSetBySKU: map[string]NodeSet{
+					nodeSKU1: {
+						nodeName1: true,
+					},
+				},
+				skuByNode: map[string]string{
+					nodeName1: nodeSKU1,
+				},
 			},
 		},
 		{
@@ -333,11 +429,25 @@ func TestNodeTrackerAddOrUpdateNode(t *testing.T) {
 						corev1.ResourceMemory: resource.MustParse("4Gi"),
 					},
 				},
+				perCPUCoreHourlyCost:  0.5,
+				perGBMemoryHourlyCost: 0.125,
+				nodeSetBySKU: map[string]NodeSet{
+					nodeSKU1: {
+						nodeName1: true,
+					},
+				},
+				skuByNode: map[string]string{
+					nodeName1: nodeSKU1,
+				},
+				pp: &dummyPricingProvider{},
 			},
 			nodes: []*corev1.Node{
 				{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: nodeName1,
+						Labels: map[string]string{
+							AKSClusterNodeSKULabelName: nodeSKU1,
+						},
 					},
 					Spec: corev1.NodeSpec{},
 					Status: corev1.NodeStatus{
@@ -373,48 +483,15 @@ func TestNodeTrackerAddOrUpdateNode(t *testing.T) {
 						corev1.ResourceMemory: resource.MustParse("11Gi"),
 					},
 				},
-			},
-		},
-		{
-			name: "can track a node with no total/allocatable capacity for supported resources",
-			nt:   NewNodeTracker(),
-			nodes: []*corev1.Node{
-				// Note that this is a case that should not happen in practice.
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: nodeName1,
-					},
-					Spec: corev1.NodeSpec{},
-					Status: corev1.NodeStatus{
-						Capacity: corev1.ResourceList{
-							corev1.ResourceStorage: resource.MustParse("800Mi"),
-						},
-						Allocatable: corev1.ResourceList{
-							corev1.ResourceStorage: resource.MustParse("700Mi"),
-						},
+				perCPUCoreHourlyCost:  0.333,
+				perGBMemoryHourlyCost: 0.0833,
+				nodeSetBySKU: map[string]NodeSet{
+					nodeSKU1: {
+						nodeName1: true,
 					},
 				},
-			},
-			wantNT: &NodeTracker{
-				totalCapacity: corev1.ResourceList{
-					corev1.ResourceCPU:    resource.Quantity{},
-					corev1.ResourceMemory: resource.Quantity{},
-				},
-				totalAllocatable: corev1.ResourceList{
-					corev1.ResourceCPU:    resource.Quantity{},
-					corev1.ResourceMemory: resource.Quantity{},
-				},
-				capacityByNode: map[string]corev1.ResourceList{
-					nodeName1: {
-						corev1.ResourceCPU:    resource.Quantity{},
-						corev1.ResourceMemory: resource.Quantity{},
-					},
-				},
-				allocatableByNode: map[string]corev1.ResourceList{
-					nodeName1: {
-						corev1.ResourceCPU:    resource.Quantity{},
-						corev1.ResourceMemory: resource.Quantity{},
-					},
+				skuByNode: map[string]string{
+					nodeName1: nodeSKU1,
 				},
 			},
 		},
@@ -429,7 +506,9 @@ func TestNodeTrackerAddOrUpdateNode(t *testing.T) {
 			if diff := cmp.Diff(
 				tc.nt, tc.wantNT,
 				cmp.AllowUnexported(NodeTracker{}),
-				ignoreNodeTrackerMutexField,
+				ignoreNodeTrackerFields,
+				cmpopts.EquateApprox(0.0, 0.01),
+				cmpopts.EquateErrors(),
 			); diff != "" {
 				t.Fatalf("AddOrUpdateNode(), node tracker diff (-got, +want): \n%s", diff)
 			}
@@ -484,6 +563,21 @@ func TestNodeTrackerRemoveNode(t *testing.T) {
 						corev1.ResourceMemory: resource.MustParse("1.8Gi"),
 					},
 				},
+				nodeSetBySKU: map[string]NodeSet{
+					nodeSKU1: {
+						nodeName1: true,
+						nodeName3: true,
+					},
+					nodeSKU2: {
+						nodeName2: true,
+					},
+				},
+				skuByNode: map[string]string{
+					nodeName1: nodeSKU1,
+					nodeName2: nodeSKU2,
+					nodeName3: nodeSKU1,
+				},
+				pp: &dummyPricingProvider{},
 			},
 			nodeNames: []string{nodeName2},
 			wantNT: &NodeTracker{
@@ -514,6 +608,19 @@ func TestNodeTrackerRemoveNode(t *testing.T) {
 						corev1.ResourceCPU:    resource.MustParse("1.8"),
 						corev1.ResourceMemory: resource.MustParse("1.8Gi"),
 					},
+				},
+				perCPUCoreHourlyCost:  0.285,
+				perGBMemoryHourlyCost: 0.111,
+				nodeSetBySKU: map[string]NodeSet{
+					nodeSKU1: {
+						nodeName1: true,
+						nodeName3: true,
+					},
+					nodeSKU2: {},
+				},
+				skuByNode: map[string]string{
+					nodeName1: nodeSKU1,
+					nodeName3: nodeSKU1,
 				},
 			},
 		},
@@ -556,6 +663,23 @@ func TestNodeTrackerRemoveNode(t *testing.T) {
 						corev1.ResourceMemory: resource.MustParse("1.8Gi"),
 					},
 				},
+				pp: &dummyPricingProvider{},
+				nodeSetBySKU: map[string]NodeSet{
+					nodeSKU1: {
+						nodeName1: true,
+					},
+					nodeSKU2: {
+						nodeName2: true,
+					},
+					nodeSKU3: {
+						nodeName3: true,
+					},
+				},
+				skuByNode: map[string]string{
+					nodeName1: nodeSKU1,
+					nodeName2: nodeSKU2,
+					nodeName3: nodeSKU3,
+				},
 			},
 			nodeNames: []string{
 				nodeName1,
@@ -573,6 +697,13 @@ func TestNodeTrackerRemoveNode(t *testing.T) {
 				},
 				capacityByNode:    map[string]corev1.ResourceList{},
 				allocatableByNode: map[string]corev1.ResourceList{},
+				costErr:           cmpopts.AnyError,
+				nodeSetBySKU: map[string]NodeSet{
+					nodeSKU1: {},
+					nodeSKU2: {},
+					nodeSKU3: {},
+				},
+				skuByNode: map[string]string{},
 			},
 		},
 		{
@@ -598,6 +729,17 @@ func TestNodeTrackerRemoveNode(t *testing.T) {
 						corev1.ResourceMemory: resource.MustParse("4Gi"),
 					},
 				},
+				pp: &dummyPricingProvider{},
+				nodeSetBySKU: map[string]NodeSet{
+					nodeSKU1: {
+						nodeName1: true,
+					},
+				},
+				skuByNode: map[string]string{
+					nodeName1: nodeSKU1,
+				},
+				perCPUCoreHourlyCost:  0.5,
+				perGBMemoryHourlyCost: 0.125,
 			},
 			nodeNames: []string{nodeName2},
 			wantNT: &NodeTracker{
@@ -621,45 +763,17 @@ func TestNodeTrackerRemoveNode(t *testing.T) {
 						corev1.ResourceMemory: resource.MustParse("4Gi"),
 					},
 				},
-			},
-		},
-		{
-			// Note that this is a case that should not happen in practice.
-			name: "can remove a tracked node with no total/allocatable capacity for supported resources",
-			nt: &NodeTracker{
-				totalCapacity: corev1.ResourceList{
-					corev1.ResourceCPU:    resource.Quantity{},
-					corev1.ResourceMemory: resource.Quantity{},
-				},
-				totalAllocatable: corev1.ResourceList{
-					corev1.ResourceCPU:    resource.Quantity{},
-					corev1.ResourceMemory: resource.Quantity{},
-				},
-				capacityByNode: map[string]corev1.ResourceList{
-					nodeName1: {
-						corev1.ResourceCPU:    resource.Quantity{},
-						corev1.ResourceMemory: resource.Quantity{},
+				pp: &dummyPricingProvider{},
+				nodeSetBySKU: map[string]NodeSet{
+					nodeSKU1: {
+						nodeName1: true,
 					},
 				},
-				allocatableByNode: map[string]corev1.ResourceList{
-					nodeName1: {
-						corev1.ResourceCPU:    resource.Quantity{},
-						corev1.ResourceMemory: resource.Quantity{},
-					},
+				skuByNode: map[string]string{
+					nodeName1: nodeSKU1,
 				},
-			},
-			nodeNames: []string{nodeName1},
-			wantNT: &NodeTracker{
-				totalCapacity: corev1.ResourceList{
-					corev1.ResourceCPU:    resource.Quantity{},
-					corev1.ResourceMemory: resource.Quantity{},
-				},
-				totalAllocatable: corev1.ResourceList{
-					corev1.ResourceCPU:    resource.Quantity{},
-					corev1.ResourceMemory: resource.Quantity{},
-				},
-				capacityByNode:    map[string]corev1.ResourceList{},
-				allocatableByNode: map[string]corev1.ResourceList{},
+				perCPUCoreHourlyCost:  0.5,
+				perGBMemoryHourlyCost: 0.125,
 			},
 		},
 	}
@@ -673,7 +787,9 @@ func TestNodeTrackerRemoveNode(t *testing.T) {
 			if diff := cmp.Diff(
 				tc.nt, tc.wantNT,
 				cmp.AllowUnexported(NodeTracker{}),
-				ignoreNodeTrackerMutexField,
+				ignoreNodeTrackerFields,
+				cmpopts.EquateApprox(0.0, 0.01),
+				cmpopts.EquateErrors(),
 			); diff != "" {
 				t.Fatalf("RemoveNode(), node tracker diff (-got, +want): \n%s", diff)
 			}

@@ -8,6 +8,8 @@ package aks
 
 import (
 	"context"
+	"fmt"
+	"math"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -16,6 +18,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	clusterv1beta1 "go.goms.io/fleet/apis/cluster/v1beta1"
 	"go.goms.io/fleet/pkg/metricprovider"
@@ -28,6 +31,12 @@ const (
 
 	// NodeCountMetric is a metric that describes the number of nodes in the cluster.
 	NodeCountMetric = "kubernetes.azure.com/node-count"
+	// PerCPUCoreCostMetric is a metric that describes the average hourly cost of a CPU core in
+	// a Kubernetes cluster.
+	PerCPUCoreCostMetric = "kubernetes.azure.com/per-cpu-core-cost"
+	// PerGBMemoryCostMetric is a metric that describes the average cost of one GB of memory in
+	// a Kubernetes cluster.
+	PerGBMemoryCostMetric = "kubernetes.azure.com/per-gb-memory-cost"
 )
 
 const (
@@ -35,9 +44,17 @@ const (
 
 	// MetricCollectionSucceededConditionType is a condition type that indicates whether a
 	// metric collection attempt has succeeded.
-	MetricCollectionSucceededConditionType = "MetricCollectionSucceeded"
-	MetricCollectionSucceededReason        = "AllMetricsCollectedSuccessfully"
-	MetricCollectionSucceededMessage       = "All metrics have been collected successfully"
+	MetricCollectionSucceededConditionType         = "MetricCollectionSucceeded"
+	MetricCollectionSucceededReason                = "AllMetricsCollectedSuccessfully"
+	MetricCollectionFailedCostErrorReason          = "FailedToCollectCosts"
+	MetricCollectionSucceededMessage               = "All metrics have been collected successfully"
+	MetricCollectionFailedCostErrorMessageTemplate = "An error has occurred when collecting cost metrics: %v"
+)
+
+const (
+	// CostMetricPrecisionLevel is the precision the AKS metric provider will use when reporting
+	// cost related metrics.
+	CostMetricPrecisionLevel = 1000
 )
 
 type MetricProvider struct {
@@ -62,7 +79,9 @@ func (p *MetricProvider) Start(ctx context.Context, config *rest.Config) error {
 		// Note that this will not stop the metrics from being collected and exported; as they
 		// are registered via a top-level variable as a part of the controller runtime package,
 		// which is also used by the Fleet member agent.
-		MetricsBindAddress: "0",
+		Metrics: metricsserver.Options{
+			BindAddress: "0",
+		},
 		// Disable health probe serving for the AKS metric provider controller manager.
 		HealthProbeBindAddress: "0",
 		// Disable leader election for the AKS metric provider.
@@ -130,9 +149,24 @@ func (p *MetricProvider) Start(ctx context.Context, config *rest.Config) error {
 }
 
 func (p *MetricProvider) Collect(_ context.Context) metricprovider.MetricCollectionResponse {
+	conds := make([]metav1.Condition, 0, 1)
+
 	// Collect the non-resource metrics.
 	metrics := make(map[string]float64)
 	metrics[NodeCountMetric] = float64(p.nt.NodeCount())
+
+	perCPUCost, perGBMemoryCost, err := p.nt.Costs()
+	if err != nil {
+		conds = append(conds, metav1.Condition{
+			Type:    MetricCollectionSucceededConditionType,
+			Status:  metav1.ConditionFalse,
+			Reason:  "FailedToCollectCosts",
+			Message: fmt.Sprintf(MetricCollectionFailedCostErrorMessageTemplate, err),
+		})
+	} else {
+		metrics[PerCPUCoreCostMetric] = math.Round(perCPUCost*CostMetricPrecisionLevel) / CostMetricPrecisionLevel
+		metrics[PerGBMemoryCostMetric] = math.Round(perGBMemoryCost*CostMetricPrecisionLevel) / CostMetricPrecisionLevel
+	}
 
 	// Collect the resource metrics.
 	resources := clusterv1beta1.ResourceUsage{}
@@ -160,28 +194,28 @@ func (p *MetricProvider) Collect(_ context.Context) metricprovider.MetricCollect
 	}
 	resources.Available = available
 
-	// Report the condition.
-	conditions := []metav1.Condition{
-		{
+	// If no errors are found, report a success as a condition.
+	if len(conds) == 0 {
+		conds = append(conds, metav1.Condition{
 			Type:    MetricCollectionSucceededConditionType,
 			Status:  metav1.ConditionTrue,
 			Reason:  MetricCollectionSucceededReason,
 			Message: MetricCollectionSucceededMessage,
-		},
+		})
 	}
 
 	// Return the collection response.
 	return metricprovider.MetricCollectionResponse{
 		Metrics:    metrics,
 		Resources:  resources,
-		Conditions: conditions,
+		Conditions: conds,
 	}
 }
 
 // New returns a new AKS metric provider.
-func New() *MetricProvider {
+func New(pp trackers.PricingProvider) *MetricProvider {
 	return &MetricProvider{
 		pt: trackers.NewPodTracker(),
-		nt: trackers.NewNodeTracker(),
+		nt: trackers.NewNodeTracker(pp),
 	}
 }

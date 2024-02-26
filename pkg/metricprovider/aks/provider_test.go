@@ -8,6 +8,7 @@ package aks
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	corev1 "k8s.io/api/core/v1"
@@ -34,7 +35,28 @@ const (
 
 	namespaceName1 = "work-1"
 	namespaceName2 = "work-2"
+	namespaceName3 = "work-3"
+
+	nodeSKU1 = "Standard_1"
+	nodeSKU2 = "Standard_2"
 )
+
+var (
+	currentTime = time.Now()
+)
+
+// dummyPricingProvider is a mock implementation that implements the PricingProvider interface.
+type dummyPricingProvider struct{}
+
+var _ trackers.PricingProvider = &dummyPricingProvider{}
+
+func (d *dummyPricingProvider) OnDemandPrice(_ string) (float64, bool) {
+	return 1.0, true
+}
+
+func (d *dummyPricingProvider) LastUpdated() time.Time {
+	return currentTime
+}
 
 func TestCollect(t *testing.T) {
 	testCases := []struct {
@@ -49,6 +71,9 @@ func TestCollect(t *testing.T) {
 				{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: nodeName1,
+						Labels: map[string]string{
+							trackers.AKSClusterNodeSKULabelName: nodeSKU1,
+						},
 					},
 					Spec: corev1.NodeSpec{},
 					Status: corev1.NodeStatus{
@@ -65,6 +90,9 @@ func TestCollect(t *testing.T) {
 				{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: nodeName2,
+						Labels: map[string]string{
+							trackers.AKSClusterNodeSKULabelName: nodeSKU2,
+						},
 					},
 					Spec: corev1.NodeSpec{},
 					Status: corev1.NodeStatus{
@@ -132,7 +160,9 @@ func TestCollect(t *testing.T) {
 			},
 			wantMetricCollectionResponse: metricprovider.MetricCollectionResponse{
 				Metrics: map[string]float64{
-					NodeCountMetric: 2,
+					NodeCountMetric:       2,
+					PerCPUCoreCostMetric:  0.167,
+					PerGBMemoryCostMetric: 0.042,
 				},
 				Resources: clusterv1beta1.ResourceUsage{
 					Capacity: corev1.ResourceList{
@@ -164,6 +194,9 @@ func TestCollect(t *testing.T) {
 				{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: nodeName1,
+						Labels: map[string]string{
+							trackers.AKSClusterNodeSKULabelName: nodeSKU1,
+						},
 					},
 					Spec: corev1.NodeSpec{},
 					Status: corev1.NodeStatus{
@@ -180,6 +213,9 @@ func TestCollect(t *testing.T) {
 				{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: nodeName2,
+						Labels: map[string]string{
+							trackers.AKSClusterNodeSKULabelName: nodeSKU2,
+						},
 					},
 					Spec: corev1.NodeSpec{},
 					Status: corev1.NodeStatus{
@@ -247,7 +283,9 @@ func TestCollect(t *testing.T) {
 			},
 			wantMetricCollectionResponse: metricprovider.MetricCollectionResponse{
 				Metrics: map[string]float64{
-					NodeCountMetric: 2,
+					NodeCountMetric:       2,
+					PerCPUCoreCostMetric:  0.167,
+					PerGBMemoryCostMetric: 0.042,
 				},
 				Resources: clusterv1beta1.ResourceUsage{
 					Capacity: corev1.ResourceList{
@@ -280,7 +318,7 @@ func TestCollect(t *testing.T) {
 			ctx := context.Background()
 
 			// Build the trackers manually for testing purposes.
-			nt := trackers.NewNodeTracker()
+			nt := trackers.NewNodeTracker(&dummyPricingProvider{})
 			pt := trackers.NewPodTracker()
 			for idx := range tc.nodes {
 				nt.AddOrUpdate(&tc.nodes[idx])
