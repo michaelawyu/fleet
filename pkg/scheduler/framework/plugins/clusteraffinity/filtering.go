@@ -13,6 +13,27 @@ import (
 	"go.goms.io/fleet/pkg/scheduler/framework"
 )
 
+func (p *Plugin) PreFilter(
+	_ context.Context,
+	_ framework.CycleStatePluginReadWriter,
+	ps *placementv1beta1.ClusterSchedulingPolicySnapshot,
+) (status *framework.Status) {
+	noRequiredClusterAffinityTerms := (ps.Spec.Policy == nil ||
+		ps.Spec.Policy.Affinity == nil ||
+		ps.Spec.Policy.Affinity.ClusterAffinity == nil ||
+		ps.Spec.Policy.Affinity.ClusterAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil ||
+		len(ps.Spec.Policy.Affinity.ClusterAffinity.RequiredDuringSchedulingIgnoredDuringExecution.ClusterSelectorTerms) == 0)
+	if noRequiredClusterAffinityTerms {
+		// There are no required cluster affinity terms to enforce; consider all clusters
+		// eligible for resource placement in the scope of this plugin.
+		//
+		// Note that this will set the cluster to skip the Filter stage for all clusters.
+		return framework.NewNonErrorStatus(framework.Skip, p.Name(), "no required cluster affinity terms to enforce")
+	}
+
+	return nil
+}
+
 // Filter allows the plugin to connect to the Filter extension point in the scheduling framework.
 func (p *Plugin) Filter(
 	_ context.Context,
@@ -26,8 +47,11 @@ func (p *Plugin) Filter(
 		ps.Spec.Policy.Affinity.ClusterAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil ||
 		len(ps.Spec.Policy.Affinity.ClusterAffinity.RequiredDuringSchedulingIgnoredDuringExecution.ClusterSelectorTerms) == 0)
 	if noRequiredClusterAffinityTerms {
-		// There are no required cluster affinity terms to enforce; consider all cluster
+		// There are no required cluster affinity terms to enforce; consider the cluster
 		// eligible for resource placement in the scope of this plugin.
+		//
+		// Typically this check should never fail as the check has been performed at the PreFilter stage;
+		// however, it is added here just in case.
 		return nil
 	}
 
