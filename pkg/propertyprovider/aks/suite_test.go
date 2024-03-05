@@ -92,9 +92,9 @@ var _ = BeforeSuite(func() {
 	// Set up resources.
 	setUpResources()
 
-	// Start the AKS metric provider.
+	// Start the AKS property provider.
 	pp = trackers.NewAKSKarpenterPricingClient(ctx, region)
-	p = New(pp)
+	p = NewWithPricingProvider(pp)
 	Expect(p.Start(ctx, memberCfg)).To(Succeed())
 })
 

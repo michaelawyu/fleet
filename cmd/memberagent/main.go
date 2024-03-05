@@ -47,7 +47,6 @@ import (
 	fleetmetrics "go.goms.io/fleet/pkg/metrics"
 	"go.goms.io/fleet/pkg/propertyprovider"
 	"go.goms.io/fleet/pkg/propertyprovider/aks"
-	"go.goms.io/fleet/pkg/propertyprovider/aks/trackers"
 	"go.goms.io/fleet/pkg/utils"
 	"go.goms.io/fleet/pkg/utils/httpclient"
 	//+kubebuilder:scaffold:imports
@@ -349,25 +348,24 @@ func Start(ctx context.Context, hubCfg, memberConfig *rest.Config, hubOpts, memb
 		var pp propertyprovider.PropertyProvider
 		switch {
 		case propertyProvider != nil && *propertyProvider == "aks":
-			if region == nil {
-				// No region is specified via the CLI args; attempt to auto-discover the region.
-				pp, err = aks.NewWithRegionDiscovery(ctx, memberMgr.GetClient())
-				if err != nil {
-					klog.ErrorS(err, "failed to auto-discover the region; start with no property provider")
-					pp = nil
-				}
-			} else {
-				pricingProvider := trackers.NewAKSKarpenterPricingClient(ctx, *region)
-				pp = aks.New(pricingProvider)
+			klog.V(2).Info("setting up the AKS property provider")
+			// Note that the property provider, though initialized here, is not started until
+			// the specific instance wins the leader election.
+			pp, err = aks.New(ctx, region, memberMgr.GetClient())
+			if err != nil {
+				klog.ErrorS(err, "failed to auto-discover the region; start with no property provider")
+				pp = nil
 			}
 		default:
 			// Fall back to not using any property provider if the provided type is none or
 			// not recognizable.
+			klog.V(2).Info("no property provider is specified, or the given type is not recognizable; start with no property provider")
 			pp = nil
 		}
 
 		// Set up the IMC controller.
 		imcReconciler, err := imcv1beta1.NewReconciler(
+			ctx,
 			hubMgr.GetClient(),
 			memberMgr.GetConfig(), memberMgr.GetClient(),
 			workController,

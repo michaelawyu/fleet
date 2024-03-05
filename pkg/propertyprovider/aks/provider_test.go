@@ -191,10 +191,10 @@ func TestCollect(t *testing.T) {
 				},
 				Conditions: []metav1.Condition{
 					{
-						Type:    MetricCollectionSucceededConditionType,
+						Type:    PropertyCollectionSucceededConditionType,
 						Status:  metav1.ConditionTrue,
-						Reason:  MetricCollectionSucceededReason,
-						Message: MetricCollectionSucceededMessage,
+						Reason:  PropertyCollectionSucceededReason,
+						Message: PropertyCollectionSucceededMessage,
 					},
 				},
 			},
@@ -320,10 +320,10 @@ func TestCollect(t *testing.T) {
 				},
 				Conditions: []metav1.Condition{
 					{
-						Type:    MetricCollectionSucceededConditionType,
+						Type:    PropertyCollectionSucceededConditionType,
 						Status:  metav1.ConditionTrue,
-						Reason:  MetricCollectionSucceededReason,
-						Message: MetricCollectionSucceededMessage,
+						Reason:  PropertyCollectionSucceededReason,
+						Message: PropertyCollectionSucceededMessage,
 					},
 				},
 			},
@@ -350,7 +350,7 @@ func TestCollect(t *testing.T) {
 			}
 			res := p.Collect(ctx)
 			if diff := cmp.Diff(res, tc.wantMetricCollectionResponse, ignoreObservationTimeFieldInPropertyValue); diff != "" {
-				t.Fatalf("Collect() metric collection response diff (-got, +want):\n%s", diff)
+				t.Fatalf("Collect() property collection response diff (-got, +want):\n%s", diff)
 			}
 		})
 	}

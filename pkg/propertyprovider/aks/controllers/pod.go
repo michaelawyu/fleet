@@ -68,11 +68,13 @@ func (p *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	//
 	// Note that the tracker will attempt to track the pod even if it has been marked for deletion.
 	if len(pod.Spec.NodeName) > 0 && pod.Status.Phase != corev1.PodSucceeded && pod.Status.Phase != corev1.PodFailed {
+		klog.V(2).InfoS("Attempt to track the pod", "pod", podRef)
 		p.PT.AddOrUpdate(pod)
 	} else {
 		// Untrack the pod.
 		//
 		// It may have been descheduled, or transited into a terminal state.
+		klog.V(2).InfoS("Untrack the pod", "pod", podRef)
 		p.PT.Remove(req.NamespacedName.String())
 	}
 

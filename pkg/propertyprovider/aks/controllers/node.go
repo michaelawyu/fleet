@@ -43,7 +43,7 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 			//
 			// Note that this controller will not add any finalizer to node objects, so as to
 			// avoid blocking normal Kuberneters operations under unexpected circumstances.
-			klog.V(2).InfoS("Node is not found; untrack it from the metric provider", "node", nodeRef)
+			klog.V(2).InfoS("Node is not found; untrack it from the property provider", "node", nodeRef)
 			r.NT.Remove(req.Name)
 			return ctrl.Result{}, nil
 		}
@@ -68,6 +68,7 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	// Also note that the tracker will attempt to track the node even if it has been
 	// marked for deletion, as cordoned, or as unschedulable. This behavior is consistent with
 	// the original Fleet setup.
+	klog.V(2).InfoS("Attempt to track the node", "node", nodeRef)
 	r.NT.AddOrUpdate(node)
 
 	return ctrl.Result{}, nil

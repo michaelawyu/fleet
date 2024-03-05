@@ -200,10 +200,10 @@ var (
 					},
 					Conditions: []metav1.Condition{
 						{
-							Type:    MetricCollectionSucceededConditionType,
+							Type:    PropertyCollectionSucceededConditionType,
 							Status:  metav1.ConditionTrue,
-							Reason:  MetricCollectionSucceededReason,
-							Message: MetricCollectionSucceededMessage,
+							Reason:  PropertyCollectionSucceededReason,
+							Message: PropertyCollectionSucceededMessage,
 						},
 					},
 				}
