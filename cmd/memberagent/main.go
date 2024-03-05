@@ -45,6 +45,9 @@ import (
 	"go.goms.io/fleet/pkg/controllers/work"
 	workv1alpha1controller "go.goms.io/fleet/pkg/controllers/workv1alpha1"
 	fleetmetrics "go.goms.io/fleet/pkg/metrics"
+	"go.goms.io/fleet/pkg/propertyprovider"
+	"go.goms.io/fleet/pkg/propertyprovider/aks"
+	"go.goms.io/fleet/pkg/propertyprovider/aks/trackers"
 	"go.goms.io/fleet/pkg/utils"
 	"go.goms.io/fleet/pkg/utils/httpclient"
 	//+kubebuilder:scaffold:imports
@@ -63,6 +66,8 @@ var (
 	leaderElectionNamespace = flag.String("leader-election-namespace", "kube-system", "The namespace in which the leader election resource will be created.")
 	enableV1Alpha1APIs      = flag.Bool("enable-v1alpha1-apis", true, "If set, the agents will watch for the v1alpha1 APIs.")
 	enableV1Beta1APIs       = flag.Bool("enable-v1beta1-apis", false, "If set, the agents will watch for the v1beta1 APIs.")
+	propertyProvider        = flag.String("property-provider", "none", "The property provider to use for the agent.")
+	region                  = flag.String("region", "", "The region where the member cluster resides.")
 )
 
 func init() {
@@ -339,7 +344,39 @@ func Start(ctx context.Context, hubCfg, memberConfig *rest.Config, hubOpts, memb
 		}
 
 		klog.Info("Setting up the internalMemberCluster v1beta1 controller")
-		if err = imcv1beta1.NewReconciler(hubMgr.GetClient(), memberMgr.GetClient(), workController).SetupWithManager(hubMgr); err != nil {
+
+		// Set up a provider provider (if applicable).
+		var pp propertyprovider.PropertyProvider
+		switch {
+		case propertyProvider != nil && *propertyProvider == "aks":
+			if region == nil {
+				// No region is specified via the CLI args; attempt to auto-discover the region.
+				pp, err = aks.NewWithRegionDiscovery(ctx, memberMgr.GetClient())
+				if err != nil {
+					klog.ErrorS(err, "failed to auto-discover the region; start with no property provider")
+					pp = nil
+				}
+			} else {
+				pricingProvider := trackers.NewAKSKarpenterPricingClient(ctx, *region)
+				pp = aks.New(pricingProvider)
+			}
+		default:
+			// Fall back to not using any property provider if the provided type is none or
+			// not recognizable.
+			pp = nil
+		}
+
+		// Set up the IMC controller.
+		imcReconciler, err := imcv1beta1.NewReconciler(
+			hubMgr.GetClient(),
+			memberMgr.GetConfig(), memberMgr.GetClient(),
+			workController,
+			pp)
+		if err != nil {
+			klog.ErrorS(err, "unable to create internalMemberCluster v1beta1 reconciler")
+			return fmt.Errorf("unable to create internalMemberCluster v1beta1 reconciler: %w", err)
+		}
+		if err := imcReconciler.SetupWithManager(hubMgr); err != nil {
 			klog.ErrorS(err, "unable to create v1beta1 controller", "controller", "internalMemberCluster")
 			return fmt.Errorf("unable to create internalMemberCluster v1beta1 controller: %w", err)
 		}

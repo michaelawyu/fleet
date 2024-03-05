@@ -13,10 +13,12 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	clusterv1beta1 "go.goms.io/fleet/apis/cluster/v1beta1"
@@ -38,6 +40,11 @@ const (
 	PerGBMemoryCostMetric = "kubernetes.azure.com/per-gb-memory-cost"
 
 	costPrecisionTemplate = "%.3f"
+)
+
+const (
+	AKSNodeModeLabelName        = "kubernetes.azure.com/mode"
+	AKSNodeSystemModeLabelValue = "system"
 )
 
 const (
@@ -228,4 +235,46 @@ func New(pp trackers.PricingProvider) propertyprovider.PropertyProvider {
 		pt: trackers.NewPodTracker(),
 		nt: trackers.NewNodeTracker(pp),
 	}
+}
+
+// NewWithRegionDiscovery returns a new AKS property provider, with the region information
+// auto-discovered.
+func NewWithRegionDiscovery(ctx context.Context, c client.Client) (propertyprovider.PropertyProvider, error) {
+	// List the nodes in the system node pool.
+	nodeList := &corev1.NodeList{}
+	// List only one node to reduce performance impact (if supported).
+	listOptions := client.ListOptions{
+		LabelSelector: labels.SelectorFromSet(labels.Set{
+			AKSNodeModeLabelName: AKSNodeSystemModeLabelValue,
+		}),
+		Limit: 1,
+	}
+	if err := c.List(ctx, nodeList, &listOptions); err != nil {
+		err := fmt.Errorf("failed to list system nodes: %w", err)
+		klog.Error(err)
+		return nil, err
+	}
+
+	// If no nodes are found, return an error.
+	if len(nodeList.Items) == 0 {
+		err := fmt.Errorf("no system nodes found")
+		klog.Error(err)
+		return nil, err
+	}
+
+	// Extract the region from the first node via the region label.
+	node := nodeList.Items[0]
+	region, found := node.Labels[corev1.LabelTopologyRegion]
+	if !found {
+		// The region label is absent; normally this should never occur.
+		err := fmt.Errorf("region label is absent on the system node %s", node.Name)
+		klog.Error(err)
+		return nil, err
+	}
+
+	pp := trackers.NewAKSKarpenterPricingClient(ctx, region)
+	return &PropertyProvider{
+		pt: trackers.NewPodTracker(),
+		nt: trackers.NewNodeTracker(pp),
+	}, nil
 }
