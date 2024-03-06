@@ -169,18 +169,18 @@ var (
 					}
 					totalCost += cost
 				}
-				perCPUCost := fmt.Sprintf(costPrecisionTemplate, totalCost/totalCPUCores)
-				perGBMemoryCost := fmt.Sprintf(costPrecisionTemplate, totalCost/totalMemoryGBs)
+				perCPUCost := fmt.Sprintf(CostPrecisionTemplate, totalCost/totalCPUCores)
+				perGBMemoryCost := fmt.Sprintf(CostPrecisionTemplate, totalCost/totalMemoryGBs)
 
 				expectedRes := propertyprovider.PropertyCollectionResponse{
 					Properties: map[clusterv1beta1.PropertyName]clusterv1beta1.PropertyValue{
-						NodeCountMetric: {
+						NodeCountProperty: {
 							Value: fmt.Sprintf("%d", len(nodes)),
 						},
-						PerCPUCoreCostMetric: {
+						PerCPUCoreCostProperty: {
 							Value: perCPUCost,
 						},
-						PerGBMemoryCostMetric: {
+						PerGBMemoryCostProperty: {
 							Value: perGBMemoryCost,
 						},
 					},

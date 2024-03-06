@@ -12,12 +12,18 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	clusterv1beta1 "go.goms.io/fleet/apis/cluster/v1beta1"
 	placementv1beta1 "go.goms.io/fleet/apis/placement/v1beta1"
+	"go.goms.io/fleet/pkg/propertyprovider/aks"
+	"go.goms.io/fleet/test/e2e/framework"
 )
 
 const (
@@ -26,6 +32,8 @@ const (
 
 	labelNameForWatcherTests  = "test-label"
 	labelValueForWatcherTests = "test-value"
+
+	nodeNameForWatcherTests = "test-node"
 )
 
 // Typically, the scheduler watchers watch for changes in the following objects:
@@ -38,9 +46,9 @@ const (
 // other two cases have been implicitly covered by other test suites, e.g.,
 // CRP removal, upscaling/downscaling, resource-only changes, etc.
 
-// Note that most of the cases below are Serial ones, as they manipulate the list of member
-// clusters in the test environment directly, which may incur side effects when running in
-// parallel with other test cases.
+// Note that most of the cases below are Serial ones, as they manipulate directly the list of member
+// clusters in the test environment and/or nodes in each member clusters, which may incur
+// unexpected side effects when running in parallel with other test cases.
 var _ = Describe("responding to specific member cluster changes", func() {
 	Context("cluster becomes eligible for PickAll CRPs, just joined", Serial, Ordered, func() {
 		crpName := fmt.Sprintf(crpNameTemplate, GinkgoParallelProcess())
@@ -191,6 +199,111 @@ var _ = Describe("responding to specific member cluster changes", func() {
 		AfterAll(func() {
 			ensureCRPAndRelatedResourcesDeletion(crpName, allMemberClusters)
 			ensureMemberClusterAndRelatedResourcesDeletion(fakeClusterName1ForWatcherTests)
+		})
+	})
+
+	Context("cluster becomes eligible for PickAll CRPs, node count changed", Serial, Ordered, func() {
+		crpName := fmt.Sprintf(crpNameTemplate, GinkgoParallelProcess())
+
+		BeforeAll(func() {
+			// Create the resources.
+			createWorkResources()
+
+			// Create the CRP.
+			crp := &placementv1beta1.ClusterResourcePlacement{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: crpName,
+					// Add a custom finalizer; this would allow us to better observe
+					// the behavior of the controllers.
+					Finalizers: []string{customDeletionBlockerFinalizer},
+				},
+				Spec: placementv1beta1.ClusterResourcePlacementSpec{
+					ResourceSelectors: workResourceSelector(),
+					Policy: &placementv1beta1.PlacementPolicy{
+						PlacementType: placementv1beta1.PickAllPlacementType,
+						Affinity: &placementv1beta1.Affinity{
+							ClusterAffinity: &placementv1beta1.ClusterAffinity{
+								RequiredDuringSchedulingIgnoredDuringExecution: &placementv1beta1.ClusterSelector{
+									ClusterSelectorTerms: []placementv1beta1.ClusterSelectorTerm{
+										{
+											PropertySelector: &placementv1beta1.PropertySelector{
+												MatchExpressions: []placementv1beta1.PropertySelectorRequirement{
+													{
+														Name:     aks.NodeCountProperty,
+														Operator: placementv1beta1.PropertySelectorGreaterThan,
+														Values: []string{
+															"4",
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					Strategy: placementv1beta1.RolloutStrategy{
+						Type: placementv1beta1.RollingUpdateRolloutStrategyType,
+						RollingUpdate: &placementv1beta1.RollingUpdateConfig{
+							UnavailablePeriodSeconds: ptr.To(2),
+						},
+					},
+				},
+			}
+			Expect(hubClient.Create(ctx, crp)).To(Succeed())
+		})
+
+		It("should not pick any cluster", func() {
+			crpStatusUpdatedActual := crpStatusUpdatedActual(workResourceIdentifiers(), nil, nil, "0")
+			Eventually(crpStatusUpdatedActual, eventuallyDuration, eventuallyInterval).Should(Succeed(), "Should not select any cluster")
+			Consistently(crpStatusUpdatedActual, consistentlyDuration, consistentlyInterval).Should(Succeed(), "Should not select any cluster")
+		})
+
+		It("can add a new node", func() {
+			Eventually(func() error {
+				node := &corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: nodeNameForWatcherTests,
+					},
+				}
+
+				return memberCluster3WestProdClient.Create(ctx, node)
+			}, eventuallyDuration, eventuallyInterval).Should(Succeed(), "Failed to create a new node")
+		})
+
+		It("should pick the new cluster", func() {
+			targetClusterNames := []string{memberCluster3WestProdName}
+			crpStatusUpdatedActual := crpStatusUpdatedActual(workResourceIdentifiers(), targetClusterNames, nil, "0")
+			Eventually(crpStatusUpdatedActual, eventuallyDuration, eventuallyInterval).Should(Succeed(), "Failed to update CRP status as expected")
+			Consistently(crpStatusUpdatedActual, consistentlyDuration, consistentlyInterval).Should(Succeed(), "Failed to update CRP status as expected")
+		})
+
+		It("should place resources on the picked clusters", func() {
+			targetClusters := []*framework.Cluster{memberCluster3WestProd}
+			for _, cluster := range targetClusters {
+				resourcePlacedActual := workNamespaceAndConfigMapPlacedOnClusterActual(cluster)
+				Eventually(resourcePlacedActual, eventuallyDuration, eventuallyInterval).Should(Succeed(), "Failed to place resources on the picked clusters")
+			}
+		})
+
+		AfterAll(func() {
+			// Delete the node.
+			node := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: nodeNameForWatcherTests,
+				},
+			}
+			Expect(client.IgnoreNotFound(memberCluster3WestProdClient.Delete(ctx, node))).To(Succeed())
+			Eventually(func() error {
+				node := &corev1.Node{}
+				if err := memberCluster3WestProdClient.Get(ctx, types.NamespacedName{Name: nodeNameForWatcherTests}, node); !errors.IsNotFound(err) {
+					return err
+				}
+				return nil
+			}, eventuallyDuration, eventuallyInterval).Should(Succeed(), "Failed to delete the node")
+
+			ensureCRPAndRelatedResourcesDeletion(crpName, []*framework.Cluster{memberCluster3WestProd})
 		})
 	})
 
@@ -478,6 +591,111 @@ var _ = Describe("responding to specific member cluster changes", func() {
 		AfterAll(func() {
 			ensureCRPAndRelatedResourcesDeletion(crpName, allMemberClusters)
 			ensureMemberClusterAndRelatedResourcesDeletion(fakeClusterName1ForWatcherTests)
+		})
+	})
+
+	Context("cluster becomes ineligible for PickAll CRPs, capacity changed", Serial, Ordered, func() {
+		crpName := fmt.Sprintf(crpNameTemplate, GinkgoParallelProcess())
+
+		BeforeAll(func() {
+			// Create the resources.
+			createWorkResources()
+
+			// Create the CRP.
+			crp := &placementv1beta1.ClusterResourcePlacement{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: crpName,
+					// Add a custom finalizer; this would allow us to better observe
+					// the behavior of the controllers.
+					Finalizers: []string{customDeletionBlockerFinalizer},
+				},
+				Spec: placementv1beta1.ClusterResourcePlacementSpec{
+					ResourceSelectors: workResourceSelector(),
+					Policy: &placementv1beta1.PlacementPolicy{
+						PlacementType: placementv1beta1.PickAllPlacementType,
+						Affinity: &placementv1beta1.Affinity{
+							ClusterAffinity: &placementv1beta1.ClusterAffinity{
+								RequiredDuringSchedulingIgnoredDuringExecution: &placementv1beta1.ClusterSelector{
+									ClusterSelectorTerms: []placementv1beta1.ClusterSelectorTerm{
+										{
+											PropertySelector: &placementv1beta1.PropertySelector{
+												MatchExpressions: []placementv1beta1.PropertySelectorRequirement{
+													{
+														Name:     aks.TotalCPUCapacityProperty,
+														Operator: placementv1beta1.PropertySelectorLessThan,
+														Values: []string{
+															"10000",
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					Strategy: placementv1beta1.RolloutStrategy{
+						Type: placementv1beta1.RollingUpdateRolloutStrategyType,
+						RollingUpdate: &placementv1beta1.RollingUpdateConfig{
+							UnavailablePeriodSeconds: ptr.To(2),
+						},
+					},
+				},
+			}
+			Expect(hubClient.Create(ctx, crp)).To(Succeed())
+		})
+
+		It("should pick all clusters", func() {
+			crpStatusUpdatedActual := crpStatusUpdatedActual(workResourceIdentifiers(), allMemberClusterNames, nil, "0")
+			Eventually(crpStatusUpdatedActual, eventuallyDuration, eventuallyInterval).Should(Succeed(), "Should not select any cluster")
+			Consistently(crpStatusUpdatedActual, consistentlyDuration, consistentlyInterval).Should(Succeed(), "Should not select any cluster")
+		})
+
+		It("can add a new node", func() {
+			Eventually(func() error {
+				node := &corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: nodeNameForWatcherTests,
+					},
+				}
+				if err := memberCluster3WestProdClient.Create(ctx, node); err != nil && !errors.IsAlreadyExists(err) {
+					return err
+				}
+
+				// Update the node's capacity.
+				if err := memberCluster3WestProdClient.Get(ctx, types.NamespacedName{Name: nodeNameForWatcherTests}, node); err != nil {
+					return err
+				}
+				node.Status.Capacity = corev1.ResourceList{
+					corev1.ResourceCPU: resource.MustParse("10000"),
+				}
+				return memberCluster3WestProdClient.Status().Update(ctx, node)
+			}, eventuallyDuration, eventuallyInterval).Should(Succeed(), "Failed to create and update a new node")
+		})
+
+		It("should keep the cluster in the scheduling decision", func() {
+			crpStatusUpdatedActual := crpStatusUpdatedActual(workResourceIdentifiers(), allMemberClusterNames, nil, "0")
+			Consistently(crpStatusUpdatedActual, consistentlyDuration, consistentlyInterval).Should(Succeed(), "Failed to update CRP status as expected")
+		})
+
+		AfterAll(func() {
+			// Delete the node.
+			node := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: nodeNameForWatcherTests,
+				},
+			}
+			Expect(client.IgnoreNotFound(memberCluster3WestProdClient.Delete(ctx, node))).To(Succeed())
+			Eventually(func() error {
+				node := &corev1.Node{}
+				if err := memberCluster3WestProdClient.Get(ctx, types.NamespacedName{Name: nodeNameForWatcherTests}, node); !errors.IsNotFound(err) {
+					return err
+				}
+				return nil
+			}, eventuallyDuration, eventuallyInterval).Should(Succeed(), "Failed to delete the node")
+
+			ensureCRPAndRelatedResourcesDeletion(crpName, []*framework.Cluster{memberCluster3WestProd})
 		})
 	})
 
@@ -855,7 +1073,7 @@ var _ = Describe("responding to specific member cluster changes", func() {
 
 		It("should not pick any cluster", func() {
 			crpStatusUpdatedActual := crpStatusUpdatedActual(workResourceIdentifiers(), nil, []string{fakeClusterName1ForWatcherTests}, "0")
-			Eventually(crpStatusUpdatedActual, consistentlyDuration, consistentlyInterval).Should(Succeed(), "Should not select any cluster")
+			Eventually(crpStatusUpdatedActual, eventuallyDuration, eventuallyInterval).Should(Succeed(), "Should not select any cluster")
 			Consistently(crpStatusUpdatedActual, consistentlyDuration, consistentlyInterval).Should(Succeed(), "Should not select any cluster")
 		})
 
@@ -944,7 +1162,7 @@ var _ = Describe("responding to specific member cluster changes", func() {
 
 		It("should not pick any cluster", func() {
 			crpStatusUpdatedActual := crpStatusUpdatedActual(workResourceIdentifiers(), nil, []string{fakeClusterName1ForWatcherTests}, "0")
-			Eventually(crpStatusUpdatedActual, consistentlyDuration, consistentlyInterval).Should(Succeed(), "Should not select any cluster")
+			Eventually(crpStatusUpdatedActual, eventuallyDuration, eventuallyInterval).Should(Succeed(), "Should not select any cluster")
 			Consistently(crpStatusUpdatedActual, consistentlyDuration, consistentlyInterval).Should(Succeed(), "Should not select any cluster")
 		})
 
@@ -1050,6 +1268,125 @@ var _ = Describe("responding to specific member cluster changes", func() {
 			ensureCRPAndRelatedResourcesDeletion(crpName, allMemberClusters)
 			ensureMemberClusterAndRelatedResourcesDeletion(fakeClusterName1ForWatcherTests)
 			ensureMemberClusterAndRelatedResourcesDeletion(fakeClusterName2ForWatcherTests)
+		})
+	})
+
+	Context("cluster becomes eligible for unfulfilled PickN CRPs, capacity changed", Serial, Ordered, func() {
+		crpName := fmt.Sprintf(crpNameTemplate, GinkgoParallelProcess())
+
+		BeforeAll(func() {
+			// Create the resources.
+			createWorkResources()
+
+			// Create the CRP.
+			crp := &placementv1beta1.ClusterResourcePlacement{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: crpName,
+					// Add a custom finalizer; this would allow us to better observe
+					// the behavior of the controllers.
+					Finalizers: []string{customDeletionBlockerFinalizer},
+				},
+				Spec: placementv1beta1.ClusterResourcePlacementSpec{
+					ResourceSelectors: workResourceSelector(),
+					Policy: &placementv1beta1.PlacementPolicy{
+						PlacementType:    placementv1beta1.PickNPlacementType,
+						NumberOfClusters: ptr.To(int32(1)),
+						Affinity: &placementv1beta1.Affinity{
+							ClusterAffinity: &placementv1beta1.ClusterAffinity{
+								RequiredDuringSchedulingIgnoredDuringExecution: &placementv1beta1.ClusterSelector{
+									ClusterSelectorTerms: []placementv1beta1.ClusterSelectorTerm{
+										{
+											PropertySelector: &placementv1beta1.PropertySelector{
+												MatchExpressions: []placementv1beta1.PropertySelectorRequirement{
+													{
+														Name:     aks.AllocatableMemoryCapacityProperty,
+														Operator: placementv1beta1.PropertySelectorGreaterThan,
+														Values: []string{
+															"10000Gi",
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					Strategy: placementv1beta1.RolloutStrategy{
+						Type: placementv1beta1.RollingUpdateRolloutStrategyType,
+						RollingUpdate: &placementv1beta1.RollingUpdateConfig{
+							UnavailablePeriodSeconds: ptr.To(2),
+						},
+					},
+				},
+			}
+			Expect(hubClient.Create(ctx, crp)).To(Succeed())
+		})
+
+		It("should not pick any cluster", func() {
+			crpStatusUpdatedActual := crpStatusUpdatedActual(workResourceIdentifiers(), nil, []string{memberCluster3WestProdName}, "0")
+			Eventually(crpStatusUpdatedActual, eventuallyDuration, eventuallyInterval).Should(Succeed(), "Should not select any cluster")
+			Consistently(crpStatusUpdatedActual, consistentlyDuration, consistentlyInterval).Should(Succeed(), "Should not select any cluster")
+		})
+
+		It("can add a new node", func() {
+			Eventually(func() error {
+				node := &corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: nodeNameForWatcherTests,
+					},
+				}
+				if err := memberCluster3WestProdClient.Create(ctx, node); err != nil && !errors.IsAlreadyExists(err) {
+					return err
+				}
+
+				// Update the node's capacity.
+				if err := memberCluster3WestProdClient.Get(ctx, types.NamespacedName{Name: nodeNameForWatcherTests}, node); err != nil {
+					return err
+				}
+				node.Status.Capacity = corev1.ResourceList{
+					corev1.ResourceMemory: resource.MustParse("10000Gi"),
+				}
+				node.Status.Allocatable = corev1.ResourceList{
+					corev1.ResourceMemory: resource.MustParse("10000Gi"),
+				}
+				return memberCluster3WestProdClient.Status().Update(ctx, node)
+			}, eventuallyDuration, eventuallyInterval).Should(Succeed(), "Failed to create and update a new node")
+		})
+
+		It("should pick the new cluster", func() {
+			targetClusterNames := []string{memberCluster3WestProdName}
+			crpStatusUpdatedActual := crpStatusUpdatedActual(workResourceIdentifiers(), targetClusterNames, nil, "0")
+			Eventually(crpStatusUpdatedActual, eventuallyDuration, eventuallyInterval).Should(Succeed(), "Failed to update CRP status as expected")
+			Consistently(crpStatusUpdatedActual, consistentlyDuration, consistentlyInterval).Should(Succeed(), "Failed to update CRP status as expected")
+		})
+
+		It("should place resources on the picked clusters", func() {
+			targetClusters := []*framework.Cluster{memberCluster3WestProd}
+			for _, cluster := range targetClusters {
+				resourcePlacedActual := workNamespaceAndConfigMapPlacedOnClusterActual(cluster)
+				Eventually(resourcePlacedActual, eventuallyDuration, eventuallyInterval).Should(Succeed(), "Failed to place resources on the picked clusters")
+			}
+		})
+
+		AfterAll(func() {
+			// Delete the node.
+			node := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: nodeNameForWatcherTests,
+				},
+			}
+			Expect(client.IgnoreNotFound(memberCluster3WestProdClient.Delete(ctx, node))).To(Succeed())
+			Eventually(func() error {
+				node := &corev1.Node{}
+				if err := memberCluster3WestProdClient.Get(ctx, types.NamespacedName{Name: nodeNameForWatcherTests}, node); !errors.IsNotFound(err) {
+					return err
+				}
+				return nil
+			}, eventuallyDuration, eventuallyInterval).Should(Succeed(), "Failed to delete the node")
+
+			ensureCRPAndRelatedResourcesDeletion(crpName, []*framework.Cluster{memberCluster3WestProd})
 		})
 	})
 
@@ -1433,6 +1770,101 @@ var _ = Describe("responding to specific member cluster changes", func() {
 		AfterAll(func() {
 			ensureCRPAndRelatedResourcesDeletion(crpName, allMemberClusters)
 			ensureMemberClusterAndRelatedResourcesDeletion(fakeClusterName1ForWatcherTests)
+		})
+	})
+
+	Context("selected cluster becomes ineligible for fulfilled PickN CRPs, node count changed", Serial, Ordered, func() {
+		crpName := fmt.Sprintf(crpNameTemplate, GinkgoParallelProcess())
+
+		BeforeAll(func() {
+			// Create the resources.
+			createWorkResources()
+
+			// Create the CRP.
+			crp := &placementv1beta1.ClusterResourcePlacement{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: crpName,
+					// Add a custom finalizer; this would allow us to better observe
+					// the behavior of the controllers.
+					Finalizers: []string{customDeletionBlockerFinalizer},
+				},
+				Spec: placementv1beta1.ClusterResourcePlacementSpec{
+					ResourceSelectors: workResourceSelector(),
+					Policy: &placementv1beta1.PlacementPolicy{
+						PlacementType:    placementv1beta1.PickNPlacementType,
+						NumberOfClusters: ptr.To(int32(1)),
+						Affinity: &placementv1beta1.Affinity{
+							ClusterAffinity: &placementv1beta1.ClusterAffinity{
+								RequiredDuringSchedulingIgnoredDuringExecution: &placementv1beta1.ClusterSelector{
+									ClusterSelectorTerms: []placementv1beta1.ClusterSelectorTerm{
+										{
+											PropertySelector: &placementv1beta1.PropertySelector{
+												MatchExpressions: []placementv1beta1.PropertySelectorRequirement{
+													{
+														Name:     aks.NodeCountProperty,
+														Operator: placementv1beta1.PropertySelectorEqualTo,
+														Values: []string{
+															"4",
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					Strategy: placementv1beta1.RolloutStrategy{
+						Type: placementv1beta1.RollingUpdateRolloutStrategyType,
+						RollingUpdate: &placementv1beta1.RollingUpdateConfig{
+							UnavailablePeriodSeconds: ptr.To(2),
+						},
+					},
+				},
+			}
+			Expect(hubClient.Create(ctx, crp)).To(Succeed())
+		})
+
+		It("should pick one cluster", func() {
+			crpStatusUpdatedActual := crpStatusUpdatedActual(workResourceIdentifiers(), []string{memberCluster3WestProdName}, nil, "0")
+			Eventually(crpStatusUpdatedActual, eventuallyDuration, eventuallyInterval).Should(Succeed(), "Should not select any cluster")
+			Consistently(crpStatusUpdatedActual, consistentlyDuration, consistentlyInterval).Should(Succeed(), "Should not select any cluster")
+		})
+
+		It("can add a new node", func() {
+			Eventually(func() error {
+				node := &corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: nodeNameForWatcherTests,
+					},
+				}
+				return memberCluster3WestProdClient.Create(ctx, node)
+			}, eventuallyDuration, eventuallyInterval).Should(Succeed(), "Failed to create and update a new node")
+		})
+
+		It("should keep the cluster in the scheduling decision", func() {
+			crpStatusUpdatedActual := crpStatusUpdatedActual(workResourceIdentifiers(), []string{memberCluster3WestProdName}, nil, "0")
+			Consistently(crpStatusUpdatedActual, consistentlyDuration, consistentlyInterval).Should(Succeed(), "Failed to update CRP status as expected")
+		})
+
+		AfterAll(func() {
+			// Delete the node.
+			node := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: nodeNameForWatcherTests,
+				},
+			}
+			Expect(client.IgnoreNotFound(memberCluster3WestProdClient.Delete(ctx, node))).To(Succeed())
+			Eventually(func() error {
+				node := &corev1.Node{}
+				if err := memberCluster3WestProdClient.Get(ctx, types.NamespacedName{Name: nodeNameForWatcherTests}, node); !errors.IsNotFound(err) {
+					return err
+				}
+				return nil
+			}, eventuallyDuration, eventuallyInterval).Should(Succeed(), "Failed to delete the node")
+
+			ensureCRPAndRelatedResourcesDeletion(crpName, []*framework.Cluster{memberCluster3WestProd})
 		})
 	})
 })

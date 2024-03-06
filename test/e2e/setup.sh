@@ -26,15 +26,22 @@ export MEMBER_AGENT_IMAGE="${MEMBER_AGENT_IMAGE:-member-agent}"
 export REFRESH_TOKEN_IMAGE="${REFRESH_TOKEN_IMAGE:-refresh-token}"
 export PROPERTY_PROVIDER="${PROPERTY_PROVIDER:-aks}"
 export USE_PREDEFINED_REGIONS="${USE_PREDEFINED_REGIONS:-false}"
-# The predefined regions.
+# The pre-defined regions; if the AKS property provider is used.
+#
+# Note that for a specific cluster, if a predefined region is not set, the node region must
+# be set, so that the AKS property provider can auto-discover the region.
 REGIONS=("" "" "eastasia")
 # The regions that should be set on each node of the respective clusters; if the AKS property
 # provider is used.
+#
+# Note that for a specific cluster, if a predefined region is set, the node region should use
+# the same value.
 AKS_NODE_REGIONS=("westus" "northeurope" "eastasia")
 # The SKUs that should be set on each node of the respective clusters; if the AKS property
 # provider is used. See the AKS documentation for specifics.
 # 
-# Note that this is for information only; kind nodes always use a fixed setup.
+# Note that this is for information only; kind nodes always use the same fixed setup
+# (total/allocatable capacity = host capacity).
 AKS_NODE_SKUS=("Standard_A4_v2" "Standard_B4ms" "Standard_D8s_v5" "Standard_E16_v5" "Standard_M16ms")
 AKS_SKU_COUNT=${#AKS_NODE_SKUS[@]}
 

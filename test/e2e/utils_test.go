@@ -19,6 +19,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -28,6 +29,8 @@ import (
 	clusterv1beta1 "go.goms.io/fleet/apis/cluster/v1beta1"
 	placementv1beta1 "go.goms.io/fleet/apis/placement/v1beta1"
 	imcv1beta1 "go.goms.io/fleet/pkg/controllers/internalmembercluster/v1beta1"
+	"go.goms.io/fleet/pkg/propertyprovider/aks"
+	"go.goms.io/fleet/pkg/propertyprovider/aks/trackers"
 	"go.goms.io/fleet/pkg/utils"
 	"go.goms.io/fleet/test/e2e/framework"
 )
@@ -201,6 +204,167 @@ func checkIfAllMemberClustersHaveJoined() {
 	}
 }
 
+// summarizeAKSClusterProperties returns the current cluster state, specifically its node count,
+// total/allocatable/available capacity, and the average per CPU and per GB of memory costs, in
+// the form of the a member cluster status object; the E2E test suite uses this information
+// to verify if the AKS property provider is working correctly.
+func summarizeAKSClusterProperties(memberCluster *framework.Cluster, mcObj *clusterv1beta1.MemberCluster) (*clusterv1beta1.MemberClusterStatus, error) {
+	c := memberCluster.KubeClient
+	nodeList := &corev1.NodeList{}
+	if err := c.List(ctx, nodeList); err != nil {
+		return nil, fmt.Errorf("failed to list nodes: %w", err)
+	}
+
+	nodeCount := len(nodeList.Items)
+
+	totalCPUCapacity := resource.Quantity{}
+	totalMemoryCapacity := resource.Quantity{}
+	allocatableCPUCapacity := resource.Quantity{}
+	allocatableMemoryCapacity := resource.Quantity{}
+	totalHourlyRate := 0.0
+	for idx := range nodeList.Items {
+		node := nodeList.Items[idx]
+
+		totalCPUCapacity.Add(node.Status.Capacity[corev1.ResourceCPU])
+		totalMemoryCapacity.Add(node.Status.Capacity[corev1.ResourceMemory])
+		allocatableCPUCapacity.Add(node.Status.Allocatable[corev1.ResourceCPU])
+		allocatableMemoryCapacity.Add(node.Status.Allocatable[corev1.ResourceMemory])
+
+		nodeSKU := node.Labels[trackers.AKSClusterNodeSKULabelName]
+		hourlyRate, found := memberCluster.PricingProvider.OnDemandPrice(nodeSKU)
+		if found {
+			totalHourlyRate += hourlyRate
+		}
+	}
+
+	cpuCores := totalCPUCapacity.AsApproximateFloat64()
+	memoryBytes := totalMemoryCapacity.AsApproximateFloat64()
+	perCPUCoreCost := totalHourlyRate / cpuCores
+	perGBMemoryCost := totalHourlyRate / (memoryBytes / (1024 * 1024 * 1024))
+
+	availableCPUCapacity := allocatableCPUCapacity.DeepCopy()
+	availableMemoryCapacity := allocatableMemoryCapacity.DeepCopy()
+	podList := &corev1.PodList{}
+	if err := c.List(ctx, podList); err != nil {
+		return nil, fmt.Errorf("failed to list pods: %w", err)
+	}
+	for idx := range podList.Items {
+		pod := podList.Items[idx]
+
+		requestedCPUCapacity := resource.Quantity{}
+		requestedMemoryCapacity := resource.Quantity{}
+		for cidx := range pod.Spec.Containers {
+			container := pod.Spec.Containers[cidx]
+			requestedCPUCapacity.Add(container.Resources.Requests[corev1.ResourceCPU])
+			requestedMemoryCapacity.Add(container.Resources.Requests[corev1.ResourceMemory])
+		}
+
+		availableCPUCapacity.Sub(requestedCPUCapacity)
+		availableMemoryCapacity.Sub(requestedMemoryCapacity)
+	}
+
+	status := clusterv1beta1.MemberClusterStatus{
+		Properties: map[clusterv1beta1.PropertyName]clusterv1beta1.PropertyValue{
+			aks.NodeCountProperty: {
+				Value: fmt.Sprintf("%d", nodeCount),
+			},
+			aks.PerCPUCoreCostProperty: {
+				Value: fmt.Sprintf(aks.CostPrecisionTemplate, perCPUCoreCost),
+			},
+			aks.PerGBMemoryCostProperty: {
+				Value: fmt.Sprintf(aks.CostPrecisionTemplate, perGBMemoryCost),
+			},
+		},
+		ResourceUsage: clusterv1beta1.ResourceUsage{
+			Capacity: corev1.ResourceList{
+				corev1.ResourceCPU:    totalCPUCapacity,
+				corev1.ResourceMemory: totalMemoryCapacity,
+			},
+			Allocatable: corev1.ResourceList{
+				corev1.ResourceCPU:    allocatableCPUCapacity,
+				corev1.ResourceMemory: allocatableMemoryCapacity,
+			},
+			Available: corev1.ResourceList{
+				corev1.ResourceCPU:    availableCPUCapacity,
+				corev1.ResourceMemory: availableMemoryCapacity,
+			},
+		},
+		Conditions: []metav1.Condition{
+			{
+				Type:               string(clusterv1beta1.ConditionTypeClusterPropertyCollectionSucceeded),
+				Status:             metav1.ConditionTrue,
+				ObservedGeneration: mcObj.Generation,
+			},
+			{
+				Type:               aks.PropertyCollectionSucceededConditionType,
+				Status:             metav1.ConditionTrue,
+				ObservedGeneration: mcObj.Generation,
+			},
+		},
+	}
+
+	return &status, nil
+}
+
+// checkIfAKSPropertyProviderIsWorking verifies if all member clusters have the AKS property
+// provider set up as expected along with the Fleet member agent. This setup uses it
+// to verify the behavior of property-based scheduling.
+//
+// Note that this check applies only to the test environment that features the AKS property
+// provider, as indicated by the PROPERTY_PROVIDER environment variable; for setup that
+// does not use it, the check will always pass.
+func checkIfAKSPropertyProviderIsWorking() {
+	if !isAKSPropertyProviderEnabled {
+		return
+	}
+
+	for idx := range allMemberClusters {
+		memberCluster := allMemberClusters[idx]
+		Eventually(func() error {
+			mcObj := &clusterv1beta1.MemberCluster{}
+			if err := hubClient.Get(ctx, types.NamespacedName{Name: memberCluster.ClusterName}, mcObj); err != nil {
+				return fmt.Errorf("failed to get member cluster %s: %w", memberCluster.ClusterName, err)
+			}
+
+			// Summarize the AKS cluster properties.
+			wantStatus, err := summarizeAKSClusterProperties(memberCluster, mcObj)
+			if err != nil {
+				return fmt.Errorf("failed to summarize AKS cluster properties for member cluster %s: %w", memberCluster.ClusterName, err)
+			}
+
+			// Diff different sections separately as the status object is large and might lead
+			// the diff output (if any) to omit certain fields.
+
+			// Diff the non-resource properties.
+			if diff := cmp.Diff(
+				mcObj.Status.Properties, wantStatus.Properties,
+				ignoreTimeTypeFields,
+			); diff != "" {
+				return fmt.Errorf("member cluster status properties diff (-got, +want):\n%s", diff)
+			}
+
+			// Diff the resource usage.
+			if diff := cmp.Diff(
+				mcObj.Status.ResourceUsage, wantStatus.ResourceUsage,
+				ignoreTimeTypeFields,
+			); diff != "" {
+				return fmt.Errorf("member cluster status resource usage diff (-got, +want):\n%s", diff)
+			}
+
+			// Diff the conditions.
+			if diff := cmp.Diff(
+				mcObj.Status.Conditions, wantStatus.Conditions,
+				ignoreMemberClusterJoinAndPropertyProviderStartedConditions,
+				ignoreConditionLTTAndMessageFields, ignoreConditionReasonField,
+				ignoreTimeTypeFields,
+			); diff != "" {
+				return fmt.Errorf("member cluster status conditions diff (-got, +want):\n%s", diff)
+			}
+			return nil
+		}, eventuallyDuration, eventuallyInterval).Should(Succeed(), "Failed to confirm that AKS property provider is up and running")
+	}
+}
+
 // setupInvalidClusters simulates the case where some clusters in the fleet becomes unhealthy or
 // have left the fleet.
 func setupInvalidClusters() {
@@ -267,7 +431,12 @@ func cleanupInvalidClusters() {
 				Name: name,
 			},
 		}
-		Expect(hubClient.Delete(ctx, mcObj)).To(Succeed(), "Failed to delete member cluster object")
+		if err := hubClient.Delete(ctx, mcObj); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			Expect(err).To(BeNil(), "Failed to delete member cluster object")
+		}
 
 		Expect(hubClient.Get(ctx, types.NamespacedName{Name: name}, mcObj)).To(Succeed(), "Failed to get member cluster object")
 		mcObj.Finalizers = []string{}
@@ -332,14 +501,14 @@ func deleteResourcesForFleetGuardRail() {
 			Name: "test-cluster-role-binding",
 		},
 	}
-	Expect(hubClient.Delete(ctx, &crb)).Should(Succeed())
+	Expect(client.IgnoreNotFound(hubClient.Delete(ctx, &crb))).Should(Succeed())
 
 	cr := rbacv1.ClusterRole{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-cluster-role",
 		},
 	}
-	Expect(hubClient.Delete(ctx, &cr)).Should(Succeed())
+	Expect(client.IgnoreNotFound(hubClient.Delete(ctx, &cr))).Should(Succeed())
 }
 
 // cleanupMemberCluster removes finalizers (if any) from the member cluster, and

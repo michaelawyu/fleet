@@ -77,7 +77,6 @@ type Reconciler struct {
 
 const (
 	// The condition information for reporting if a property provider has started.
-	ClusterPropertyProviderStartedConditionType   = "ClusterPropertyProviderStarted"
 	ClusterPropertyProviderStartedTimedOutReason  = "TimedOut"
 	ClusterPropertyProviderStartedTimedOutMessage = "The property provider does not start up in time"
 	ClusterPropertyProviderStartedFailedReason    = "FailedToStart"
@@ -86,7 +85,6 @@ const (
 	ClusterPropertyProviderStartedMessage         = "The property provider has started successfully"
 
 	// The condition information for reporting if the latest cluster properties have been collected.
-	ClusterPropertyCollectionSucceededConditionType    = "ClusterPropertyCollectionSucceeded"
 	ClusterPropertyCollectionFailedTooManyCallsReason  = "TooManyCalls"
 	ClusterPropertyCollectionFailedTooManyCallsMessage = "There are too many on-going calls to the property provider; will retry if some calls return"
 	ClusterPropertyCollectionTimedOutReason            = "TimedOut"
@@ -327,7 +325,7 @@ func (r *Reconciler) connectToPropertyProvider(ctx context.Context, imc *cluster
 // collection attempt has been successful.
 func reportPropertyProviderCollectionCondition(imc *clusterv1beta1.InternalMemberCluster, status metav1.ConditionStatus, reason, message string) {
 	meta.SetStatusCondition(&imc.Status.Conditions, metav1.Condition{
-		Type:               ClusterPropertyCollectionSucceededConditionType,
+		Type:               string(clusterv1beta1.ConditionTypeClusterPropertyCollectionSucceeded),
 		Status:             status,
 		Reason:             reason,
 		Message:            message,
@@ -339,7 +337,7 @@ func reportPropertyProviderCollectionCondition(imc *clusterv1beta1.InternalMembe
 // has been started successfully.
 func reportPropertyProviderStartedCondition(imc *clusterv1beta1.InternalMemberCluster, status metav1.ConditionStatus, reason, message string) {
 	meta.SetStatusCondition(&imc.Status.Conditions, metav1.Condition{
-		Type:               ClusterPropertyProviderStartedConditionType,
+		Type:               string(clusterv1beta1.ConditionTypeClusterPropertyProviderStarted),
 		Status:             status,
 		Reason:             reason,
 		Message:            message,

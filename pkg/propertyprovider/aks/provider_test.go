@@ -165,13 +165,13 @@ func TestCollect(t *testing.T) {
 			},
 			wantMetricCollectionResponse: propertyprovider.PropertyCollectionResponse{
 				Properties: map[clusterv1beta1.PropertyName]clusterv1beta1.PropertyValue{
-					NodeCountMetric: {
+					NodeCountProperty: {
 						Value: "2",
 					},
-					PerCPUCoreCostMetric: {
+					PerCPUCoreCostProperty: {
 						Value: "0.167",
 					},
-					PerGBMemoryCostMetric: {
+					PerGBMemoryCostProperty: {
 						Value: "0.042",
 					},
 				},
@@ -294,13 +294,13 @@ func TestCollect(t *testing.T) {
 			},
 			wantMetricCollectionResponse: propertyprovider.PropertyCollectionResponse{
 				Properties: map[clusterv1beta1.PropertyName]clusterv1beta1.PropertyValue{
-					NodeCountMetric: {
+					NodeCountProperty: {
 						Value: "2",
 					},
-					PerCPUCoreCostMetric: {
+					PerCPUCoreCostProperty: {
 						Value: "0.167",
 					},
-					PerGBMemoryCostMetric: {
+					PerGBMemoryCostProperty: {
 						Value: "0.042",
 					},
 				},

@@ -405,7 +405,7 @@ func TestReportClusterPropertiesWithPropertyProviderTooManyCalls(t *testing.T) {
 				Status: clusterv1beta1.InternalMemberClusterStatus{
 					Conditions: []metav1.Condition{
 						{
-							Type:    ClusterPropertyCollectionSucceededConditionType,
+							Type:    string(clusterv1beta1.ConditionTypeClusterPropertyCollectionSucceeded),
 							Status:  metav1.ConditionFalse,
 							Reason:  ClusterPropertyCollectionFailedTooManyCallsReason,
 							Message: ClusterPropertyCollectionFailedTooManyCallsMessage,
@@ -478,7 +478,7 @@ func TestReportClusterPropertiesWithPropertyProviderTimedOut(t *testing.T) {
 				Status: clusterv1beta1.InternalMemberClusterStatus{
 					Conditions: []metav1.Condition{
 						{
-							Type:    ClusterPropertyCollectionSucceededConditionType,
+							Type:    string(clusterv1beta1.ConditionTypeClusterPropertyCollectionSucceeded),
 							Status:  metav1.ConditionFalse,
 							Reason:  ClusterPropertyCollectionTimedOutReason,
 							Message: ClusterPropertyCollectionTimedOutMessage,
@@ -578,7 +578,7 @@ func TestReportClusterPropertiesWithPropertyProvider(t *testing.T) {
 				Status: clusterv1beta1.InternalMemberClusterStatus{
 					Conditions: []metav1.Condition{
 						{
-							Type:               ClusterPropertyCollectionSucceededConditionType,
+							Type:               string(clusterv1beta1.ConditionTypeClusterPropertyCollectionSucceeded),
 							Status:             metav1.ConditionTrue,
 							Reason:             ClusterPropertyCollectionSucceededReason,
 							Message:            ClusterPropertyCollectionSucceededMessage,

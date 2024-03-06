@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
@@ -30,21 +31,25 @@ import (
 const (
 	// A list of properties that the AKS property provider collects.
 
-	// NodeCountMetric is a property that describes the number of nodes in the cluster.
-	NodeCountMetric = "kubernetes.azure.com/node-count"
-	// PerCPUCoreCostMetric is a property that describes the average hourly cost of a CPU core in
+	// NodeCountProperty is a property that describes the number of nodes in the cluster.
+	NodeCountProperty = "kubernetes.azure.com/node-count"
+	// PerCPUCoreCostProperty is a property that describes the average hourly cost of a CPU core in
 	// a Kubernetes cluster.
-	PerCPUCoreCostMetric = "kubernetes.azure.com/per-cpu-core-cost"
-	// PerGBMemoryCostMetric is a property that describes the average cost of one GB of memory in
+	PerCPUCoreCostProperty = "kubernetes.azure.com/per-cpu-core-cost"
+	// PerGBMemoryCostProperty is a property that describes the average cost of one GB of memory in
 	// a Kubernetes cluster.
-	PerGBMemoryCostMetric = "kubernetes.azure.com/per-gb-memory-cost"
+	PerGBMemoryCostProperty = "kubernetes.azure.com/per-gb-memory-cost"
 
-	costPrecisionTemplate = "%.3f"
-)
+	// The resource properties.
+	TotalCPUCapacityProperty       = "resources.kubernetes-fleet.io/total-cpu"
+	AllocatableCPUCapacityProperty = "resources.kubernetes-fleet.io/allocatable-cpu"
+	AvailableCPUCapacityProperty   = "resources.kubernetes-fleet.io/available-cpu"
 
-const (
-	AKSNodeModeLabelName        = "kubernetes.azure.com/mode"
-	AKSNodeSystemModeLabelValue = "system"
+	TotalMemoryCapacityProperty       = "resources.kubernetes-fleet.io/total-memory"
+	AllocatableMemoryCapacityProperty = "resources.kubernetes-fleet.io/allocatable-memory"
+	AvailableMemoryCapacityProperty   = "resources.kubernetes-fleet.io/available-memory"
+
+	CostPrecisionTemplate = "%.3f"
 )
 
 const (
@@ -57,12 +62,6 @@ const (
 	PropertyCollectionFailedCostErrorReason          = "FailedToCollectCosts"
 	PropertyCollectionSucceededMessage               = "All properties have been collected successfully"
 	PropertyCollectionFailedCostErrorMessageTemplate = "An error has occurred when collecting cost properties: %v"
-)
-
-const (
-	// CostMetricPrecisionLevel is the precision the AKS property provider will use when reporting
-	// cost related properties.
-	CostMetricPrecisionLevel = 1000
 )
 
 type PropertyProvider struct {
@@ -161,7 +160,7 @@ func (p *PropertyProvider) Collect(_ context.Context) propertyprovider.PropertyC
 
 	// Collect the non-resource properties.
 	properties := make(map[clusterv1beta1.PropertyName]clusterv1beta1.PropertyValue)
-	properties[NodeCountMetric] = clusterv1beta1.PropertyValue{
+	properties[NodeCountProperty] = clusterv1beta1.PropertyValue{
 		Value:           fmt.Sprintf("%d", p.nt.NodeCount()),
 		ObservationTime: metav1.Now(),
 	}
@@ -175,12 +174,12 @@ func (p *PropertyProvider) Collect(_ context.Context) propertyprovider.PropertyC
 			Message: fmt.Sprintf(PropertyCollectionFailedCostErrorMessageTemplate, err),
 		})
 	} else {
-		properties[PerCPUCoreCostMetric] = clusterv1beta1.PropertyValue{
-			Value:           fmt.Sprintf(costPrecisionTemplate, perCPUCost),
+		properties[PerCPUCoreCostProperty] = clusterv1beta1.PropertyValue{
+			Value:           fmt.Sprintf(CostPrecisionTemplate, perCPUCost),
 			ObservationTime: metav1.Now(),
 		}
-		properties[PerGBMemoryCostMetric] = clusterv1beta1.PropertyValue{
-			Value:           fmt.Sprintf(costPrecisionTemplate, perGBMemoryCost),
+		properties[PerGBMemoryCostProperty] = clusterv1beta1.PropertyValue{
+			Value:           fmt.Sprintf(CostPrecisionTemplate, perGBMemoryCost),
 			ObservationTime: metav1.Now(),
 		}
 	}
@@ -234,7 +233,7 @@ func (p *PropertyProvider) Collect(_ context.Context) propertyprovider.PropertyC
 //
 // The client argument facilitates auto-discovery of the region where the AKS cluster resides;
 // If a region is specified, the client argument can be omitted.
-func New(ctx context.Context, region *string, c client.Client) (propertyprovider.PropertyProvider, error) {
+func New(ctx context.Context, region *string, c client.Reader) (propertyprovider.PropertyProvider, error) {
 	if region != nil && *region != "" {
 		klog.V(2).InfoS("Using the specified region for the AKS property provider", "region", *region)
 		pp := trackers.NewAKSKarpenterPricingClient(ctx, *region)
@@ -245,24 +244,32 @@ func New(ctx context.Context, region *string, c client.Client) (propertyprovider
 	}
 
 	klog.V(2).Info("Auto-discover region for the AKS property provider")
-	// Auto-discover the region by listing the nodes in the system node pool.
+	// Auto-discover the region by listing the nodes.
 	nodeList := &corev1.NodeList{}
 	// List only one node to reduce performance impact (if supported).
+	//
+	// By default an AKS cluster always has at least one node; all nodes should be in the same
+	// region and has the topology label set.
+	req, err := labels.NewRequirement(corev1.LabelTopologyRegion, selection.Exists, []string{})
+	if err != nil {
+		// This should never happen.
+		err := fmt.Errorf("failed to create a label requirement: %w", err)
+		klog.Error(err)
+		return nil, err
+	}
 	listOptions := client.ListOptions{
-		LabelSelector: labels.SelectorFromSet(labels.Set{
-			AKSNodeModeLabelName: AKSNodeSystemModeLabelValue,
-		}),
-		Limit: 1,
+		LabelSelector: labels.NewSelector().Add(*req),
+		Limit:         1,
 	}
 	if err := c.List(ctx, nodeList, &listOptions); err != nil {
-		err := fmt.Errorf("failed to list system nodes: %w", err)
+		err := fmt.Errorf("failed to list nodes with the region label: %w", err)
 		klog.Error(err)
 		return nil, err
 	}
 
 	// If no nodes are found, return an error.
 	if len(nodeList.Items) == 0 {
-		err := fmt.Errorf("no system nodes found")
+		err := fmt.Errorf("no nodes found with the region label")
 		klog.Error(err)
 		return nil, err
 	}
@@ -272,7 +279,7 @@ func New(ctx context.Context, region *string, c client.Client) (propertyprovider
 	nodeRegion, found := node.Labels[corev1.LabelTopologyRegion]
 	if !found {
 		// The region label is absent; normally this should never occur.
-		err := fmt.Errorf("region label is absent on the system node %s", node.Name)
+		err := fmt.Errorf("region label is absent on node %s", node.Name)
 		klog.Error(err)
 		return nil, err
 	}
