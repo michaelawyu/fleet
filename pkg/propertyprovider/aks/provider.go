@@ -68,6 +68,15 @@ type PropertyProvider struct {
 	pt *trackers.PodTracker
 	nt *trackers.NodeTracker
 
+	// needsLazyInitialization, if set to true, dictates that additional initialization work,
+	// specifically the setup of the pricing client, needs to be done when the Start method is
+	// first called.
+	//
+	// This is necessary as the pricing client requires that a region to be specified; it can
+	// be either specified by the user or auto-disocvered from the AKS cluster. In the latter
+	// case, the provider must wait until the Fleet member agent wins the leader election.
+	needsLazyInitialization bool
+
 	// The controller manager in use by the AKS property provider; this field is mostly reserved for
 	// testing purposes.
 	mgr ctrl.Manager
@@ -76,6 +85,7 @@ type PropertyProvider struct {
 // Verify that the AKS property provider implements the MetricProvider interface at compile time.
 var _ propertyprovider.PropertyProvider = &PropertyProvider{}
 
+// Start starts the AKS property provider.
 func (p *PropertyProvider) Start(ctx context.Context, config *rest.Config) error {
 	klog.V(2).Info("Starting AKS property provider")
 
@@ -107,6 +117,18 @@ func (p *PropertyProvider) Start(ctx context.Context, config *rest.Config) error
 	if err != nil {
 		klog.Errorf("Failed to start AKS property provider: %v", err)
 		return err
+	}
+
+	if p.needsLazyInitialization {
+		// Note that an API reader is passed here for the purpose of auto-discovering region
+		// information from AKS nodes; at this time the cache from the controller manager
+		// has not been initialized yet and as a result cached client is not yet available.
+		//
+		// This incurs the slightly higher overhead, however, as auto-discovery runs only
+		// once, the performance impact is negligible.
+		if err := p.autoDiscoverRegionAndSetupTrackers(ctx, mgr.GetAPIReader()); err != nil {
+			return err
+		}
 	}
 
 	// Set up the node and pod reconcilers.
@@ -155,6 +177,7 @@ func (p *PropertyProvider) Start(ctx context.Context, config *rest.Config) error
 	return nil
 }
 
+// Collect collects the properties of an AKS cluster.
 func (p *PropertyProvider) Collect(_ context.Context) propertyprovider.PropertyCollectionResponse {
 	conds := make([]metav1.Condition, 0, 1)
 
@@ -228,21 +251,7 @@ func (p *PropertyProvider) Collect(_ context.Context) propertyprovider.PropertyC
 	}
 }
 
-// New returns a new AKS property provider using the default pricing provider, which is,
-// at this moment, an AKS Karpenter pricing client.
-//
-// The client argument facilitates auto-discovery of the region where the AKS cluster resides;
-// If a region is specified, the client argument can be omitted.
-func New(ctx context.Context, region *string, c client.Reader) (propertyprovider.PropertyProvider, error) {
-	if region != nil && *region != "" {
-		klog.V(2).InfoS("Using the specified region for the AKS property provider", "region", *region)
-		pp := trackers.NewAKSKarpenterPricingClient(ctx, *region)
-		return &PropertyProvider{
-			pt: trackers.NewPodTracker(),
-			nt: trackers.NewNodeTracker(pp),
-		}, nil
-	}
-
+func (p *PropertyProvider) autoDiscoverRegionAndSetupTrackers(ctx context.Context, c client.Reader) error {
 	klog.V(2).Info("Auto-discover region for the AKS property provider")
 	// Auto-discover the region by listing the nodes.
 	nodeList := &corev1.NodeList{}
@@ -255,7 +264,7 @@ func New(ctx context.Context, region *string, c client.Reader) (propertyprovider
 		// This should never happen.
 		err := fmt.Errorf("failed to create a label requirement: %w", err)
 		klog.Error(err)
-		return nil, err
+		return err
 	}
 	listOptions := client.ListOptions{
 		LabelSelector: labels.NewSelector().Add(*req),
@@ -264,14 +273,14 @@ func New(ctx context.Context, region *string, c client.Reader) (propertyprovider
 	if err := c.List(ctx, nodeList, &listOptions); err != nil {
 		err := fmt.Errorf("failed to list nodes with the region label: %w", err)
 		klog.Error(err)
-		return nil, err
+		return err
 	}
 
 	// If no nodes are found, return an error.
 	if len(nodeList.Items) == 0 {
 		err := fmt.Errorf("no nodes found with the region label")
 		klog.Error(err)
-		return nil, err
+		return err
 	}
 
 	// Extract the region from the first node via the region label.
@@ -281,15 +290,33 @@ func New(ctx context.Context, region *string, c client.Reader) (propertyprovider
 		// The region label is absent; normally this should never occur.
 		err := fmt.Errorf("region label is absent on node %s", node.Name)
 		klog.Error(err)
-		return nil, err
+		return err
 	}
 	klog.V(2).InfoS("Auto-discovered region for the AKS property provider", "region", nodeRegion)
 
 	pp := trackers.NewAKSKarpenterPricingClient(ctx, nodeRegion)
+	p.pt = trackers.NewPodTracker()
+	p.nt = trackers.NewNodeTracker(pp)
+	return nil
+}
+
+// New returns a new AKS property provider using the default pricing provider, which is,
+// at this moment, an AKS Karpenter pricing client.
+//
+// The client argument facilitates auto-discovery of the region where the AKS cluster resides;
+// If a region is specified, the client argument can be omitted.
+func New(ctx context.Context, region *string) propertyprovider.PropertyProvider {
+	if region != nil && *region != "" {
+		klog.V(2).InfoS("Using the specified region for the AKS property provider", "region", *region)
+		pp := trackers.NewAKSKarpenterPricingClient(ctx, *region)
+		return &PropertyProvider{
+			pt: trackers.NewPodTracker(),
+			nt: trackers.NewNodeTracker(pp),
+		}
+	}
 	return &PropertyProvider{
-		pt: trackers.NewPodTracker(),
-		nt: trackers.NewNodeTracker(pp),
-	}, nil
+		needsLazyInitialization: true,
+	}
 }
 
 // NewWithPricingProvider returns a new AKS property provider with the given

@@ -351,11 +351,7 @@ func Start(ctx context.Context, hubCfg, memberConfig *rest.Config, hubOpts, memb
 			klog.V(2).Info("setting up the AKS property provider")
 			// Note that the property provider, though initialized here, is not started until
 			// the specific instance wins the leader election.
-			pp, err = aks.New(ctx, region, memberMgr.GetAPIReader())
-			if err != nil {
-				klog.ErrorS(err, "failed to auto-discover the region; start with no property provider")
-				pp = nil
-			}
+			pp = aks.New(ctx, region)
 		default:
 			// Fall back to not using any property provider if the provided type is none or
 			// not recognizable.
