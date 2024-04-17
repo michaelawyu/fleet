@@ -90,7 +90,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req runtime.Request) (runtim
 	crpLabelMatcher := client.MatchingLabels{
 		fleetv1beta1.CRPTrackingLabel: crp.Name,
 	}
-	if err := r.UncachedReader.List(ctx, bindingList, crpLabelMatcher); err != nil {
+	if err := r.Client.List(ctx, bindingList, crpLabelMatcher); err != nil {
+		//if err := r.UncachedReader.List(ctx, bindingList, crpLabelMatcher); err != nil {
 		klog.ErrorS(err, "Failed to list all the bindings associated with the clusterResourcePlacement",
 			"clusterResourcePlacement", crpName)
 		return runtime.Result{}, controller.NewAPIServerError(false, err)

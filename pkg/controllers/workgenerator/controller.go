@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/ptr"
@@ -202,11 +203,23 @@ func (r *Reconciler) ensureFinalizer(ctx context.Context, resourceBinding client
 	if controllerutil.ContainsFinalizer(resourceBinding, fleetv1beta1.WorkFinalizer) {
 		return nil
 	}
-	controllerutil.AddFinalizer(resourceBinding, fleetv1beta1.WorkFinalizer)
-	if err := r.Client.Update(ctx, resourceBinding); err != nil {
-		klog.ErrorS(err, "Failed to add the work finalizer to resourceBinding", "resourceBinding", klog.KObj(resourceBinding))
-		return controller.NewUpdateIgnoreConflictError(err)
+
+	errAfterRetries := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		if err := r.Client.Get(ctx, client.ObjectKeyFromObject(resourceBinding), resourceBinding); err != nil {
+			return err
+		}
+
+		controllerutil.AddFinalizer(resourceBinding, fleetv1beta1.WorkFinalizer)
+		if err := r.Client.Update(ctx, resourceBinding); err != nil {
+			return err
+		}
+		return nil
+	})
+	if errAfterRetries != nil {
+		klog.ErrorS(errAfterRetries, "Failed to add the work finalizer after retries", "resourceBinding", klog.KObj(resourceBinding))
+		return controller.NewUpdateIgnoreConflictError(errAfterRetries)
 	}
+
 	klog.V(2).InfoS("Successfully add the work finalizer", "resourceBinding", klog.KObj(resourceBinding))
 	return nil
 }
@@ -565,6 +578,7 @@ func extractResFromConfigMap(uConfigMap *unstructured.Unstructured) ([]fleetv1be
 // SetupWithManager sets up the controller with the Manager.
 // It watches binding events and also update/delete events for work.
 func (r *Reconciler) SetupWithManager(mgr controllerruntime.Manager) error {
+	klog.Infof("Find me: worker count: %d", r.MaxConcurrentReconciles)
 	r.recorder = mgr.GetEventRecorderFor("work generator")
 	return controllerruntime.NewControllerManagedBy(mgr).Named("work-generator").
 		WithOptions(ctrl.Options{MaxConcurrentReconciles: r.MaxConcurrentReconciles}). // set the max number of concurrent reconciles

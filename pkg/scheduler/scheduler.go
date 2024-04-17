@@ -24,7 +24,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	fleetv1beta1 "go.goms.io/fleet/apis/placement/v1beta1"
-	"go.goms.io/fleet/pkg/metrics"
 	"go.goms.io/fleet/pkg/scheduler/framework"
 	"go.goms.io/fleet/pkg/scheduler/queue"
 	"go.goms.io/fleet/pkg/utils/controller"
@@ -108,8 +107,8 @@ func (s *Scheduler) scheduleOnce(ctx context.Context) {
 	}()
 
 	// keep track of the number of active scheduling loop
-	metrics.SchedulerActiveWorkers.WithLabelValues().Add(1)
-	defer metrics.SchedulerActiveWorkers.WithLabelValues().Add(-1)
+	schedulerActiveWorkers.WithLabelValues().Add(1)
+	defer schedulerActiveWorkers.WithLabelValues().Add(-1)
 
 	startTime := time.Now()
 	crpRef := klog.KRef("", string(crpName))
@@ -374,7 +373,7 @@ func (s *Scheduler) addSchedulerCleanUpFinalizer(ctx context.Context, crp *fleet
 
 // observeSchedulingCycleMetrics adds a data point to the scheduling cycle duration metric.
 func observeSchedulingCycleMetrics(startTime time.Time, isFailed, needsRequeue bool) {
-	metrics.SchedulingCycleDurationMilliseconds.
+	schedulingCycleDurationMilliseconds.
 		WithLabelValues(fmt.Sprintf("%t", isFailed), fmt.Sprintf("%t", needsRequeue)).
 		Observe(float64(time.Since(startTime).Milliseconds()))
 }

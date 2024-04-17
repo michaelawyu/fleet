@@ -84,10 +84,6 @@ func SetupControllers(ctx context.Context, wg *sync.WaitGroup, mgr ctrl.Manager,
 	}
 
 	discoverClient := discovery.NewDiscoveryClientForConfigOrDie(config)
-	if err != nil {
-		klog.ErrorS(err, "unable to create the discover client")
-		return err
-	}
 
 	// Verify CRD installation status.
 	if opts.EnableV1Alpha1APIs {
@@ -205,8 +201,9 @@ func SetupControllers(ctx context.Context, wg *sync.WaitGroup, mgr ctrl.Manager,
 		// Set up  a new controller to do rollout resources according to CRP rollout strategy
 		klog.Info("Setting up rollout controller")
 		if err := (&rollout.Reconciler{
-			Client:                  mgr.GetClient(),
-			UncachedReader:          mgr.GetAPIReader(),
+			Client:         mgr.GetClient(),
+			UncachedReader: mgr.GetAPIReader(),
+			//MaxConcurrentReconciles: 100,
 			MaxConcurrentReconciles: int(math.Ceil(float64(opts.MaxFleetSizeSupported)/30) * math.Ceil(float64(opts.MaxConcurrentClusterPlacement)/10)),
 		}).SetupWithManager(mgr); err != nil {
 			klog.ErrorS(err, "Unable to set up rollout controller")
@@ -216,7 +213,8 @@ func SetupControllers(ctx context.Context, wg *sync.WaitGroup, mgr ctrl.Manager,
 		// Set up the work generator
 		klog.Info("Setting up work generator")
 		if err := (&workgenerator.Reconciler{
-			Client:                  mgr.GetClient(),
+			Client: mgr.GetClient(),
+			//MaxConcurrentReconciles: 100,
 			MaxConcurrentReconciles: int(math.Ceil(float64(opts.MaxFleetSizeSupported)/10) * math.Ceil(float64(opts.MaxConcurrentClusterPlacement)/10)),
 		}).SetupWithManager(mgr); err != nil {
 			klog.ErrorS(err, "Unable to set up work generator")
@@ -232,6 +230,7 @@ func SetupControllers(ctx context.Context, wg *sync.WaitGroup, mgr ctrl.Manager,
 		)
 		// we use one scheduler for every 10 concurrent placement
 		defaultScheduler := scheduler.NewScheduler("DefaultScheduler", defaultFramework, defaultSchedulingQueue, mgr,
+			//100)
 			int(math.Ceil(float64(opts.MaxFleetSizeSupported)/50)*math.Ceil(float64(opts.MaxConcurrentClusterPlacement)/10)))
 		klog.Info("Starting the scheduler")
 		// Scheduler must run in a separate goroutine as Run() is a blocking call.
@@ -286,8 +285,9 @@ func SetupControllers(ctx context.Context, wg *sync.WaitGroup, mgr ctrl.Manager,
 		InformerManager:                            dynamicInformerManager,
 		ResourceConfig:                             resourceConfig,
 		SkippedNamespaces:                          skippedNamespaces,
-		ConcurrentClusterPlacementWorker:           int(math.Ceil(float64(opts.MaxConcurrentClusterPlacement) / 10)),
-		ConcurrentResourceChangeWorker:             opts.ConcurrentResourceChangeSyncs,
+		//ConcurrentClusterPlacementWorker:           100,
+		ConcurrentClusterPlacementWorker: int(math.Ceil(float64(opts.MaxConcurrentClusterPlacement) / 10)),
+		ConcurrentResourceChangeWorker:   opts.ConcurrentResourceChangeSyncs,
 	}
 
 	if err := mgr.Add(resourceChangeDetector); err != nil {

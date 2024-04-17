@@ -1,0 +1,8 @@
+prometheus:
+  prometheusSpec:
+    additionalScrapeConfigs:
+    - job_name: fleet
+      static_configs:
+      - targets: ["10.0.163.226:9090"]
+  service:
+    type: LoadBalancer

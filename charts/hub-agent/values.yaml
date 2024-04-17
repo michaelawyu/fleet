@@ -37,7 +37,8 @@ enableV1Beta1APIs: true
 
 hubAPIQPS: 20
 hubAPIBurst: 100
+#MaxConcurrentClusterPlacement: 20
 MaxConcurrentClusterPlacement: 10
 ConcurrentResourceChangeSyncs: 20
-logFileMaxSize: 1000000
+#MaxFleetSizeSupported: 200
 MaxFleetSizeSupported: 100

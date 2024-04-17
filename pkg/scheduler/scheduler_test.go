@@ -23,7 +23,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	fleetv1beta1 "go.goms.io/fleet/apis/placement/v1beta1"
-	"go.goms.io/fleet/pkg/metrics"
 )
 
 const (
@@ -313,11 +312,11 @@ func TestObserveSchedulingCycleMetrics(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			observeSchedulingCycleMetrics(tc.cycleStartTime, false, false)
 
-			if c := testutil.CollectAndCount(metrics.SchedulingCycleDurationMilliseconds); c != tc.wantMetricCount {
+			if c := testutil.CollectAndCount(schedulingCycleDurationMilliseconds); c != tc.wantMetricCount {
 				t.Fatalf("metric counts, got %d, want %d", c, tc.wantMetricCount)
 			}
 
-			if err := testutil.CollectAndCompare(metrics.SchedulingCycleDurationMilliseconds, strings.NewReader(metricMetadata+tc.wantHistogram)); err != nil {
+			if err := testutil.CollectAndCompare(schedulingCycleDurationMilliseconds, strings.NewReader(metricMetadata+tc.wantHistogram)); err != nil {
 				t.Errorf("%s", err)
 			}
 		})

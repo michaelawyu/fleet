@@ -239,6 +239,7 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 
 	// TO-DO (chenyu1): add metrics.
 
+	perStageStartTime := time.Now()
 	// Collect all clusters.
 	//
 	// Note that clusters here are listed from the cached client for improved performance. This is
@@ -249,6 +250,7 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 		klog.ErrorS(err, "Failed to collect clusters", "clusterSchedulingPolicySnapshot", policyRef)
 		return ctrl.Result{}, err
 	}
+	observeSchedulingCyclePerStageDurationMetrics("collect-clusters", float64(time.Since(perStageStartTime).Milliseconds()))
 
 	// Collect all bindings.
 	//
@@ -263,11 +265,13 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 	// overloading). In the long run we might still want to resort to a cached situtation.
 	//
 	// TO-DO (chenyu1): explore the possbilities of using a mutation cache for better performance.
+	perStageStartTime = time.Now()
 	bindings, err := f.collectBindings(ctx, crpName)
 	if err != nil {
 		klog.ErrorS(err, "Failed to collect bindings", "clusterSchedulingPolicySnapshot", policyRef)
 		return ctrl.Result{}, err
 	}
+	observeSchedulingCyclePerStageDurationMetrics("collect-bindings", float64(time.Since(perStageStartTime).Milliseconds()))
 	klog.V(2).InfoS("listed all the existing bindings belong to one crp", "clusterSchedulingPolicySnapshot", policyRef, "latency", time.Since(startTime).Milliseconds())
 
 	// Parse the bindings, find out
@@ -289,20 +293,26 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 	// Note that bindings marked as unscheduled are ignored by the scheduler, as they
 	// are irrelevant to the scheduling cycle. However, we will reconcile them with the latest scheduling
 	// result so that we won't have a ever increasing chain of flip flop bindings.
+	perStageStartTime = time.Now()
 	bound, scheduled, obsolete, unscheduled, dangling := classifyBindings(policy, bindings, clusters)
+	observeSchedulingCyclePerStageDurationMetrics("classify-bindings", float64(time.Since(perStageStartTime).Milliseconds()))
 
 	// Mark all dangling bindings as unscheduled.
+	perStageStartTime = time.Now()
 	if err := f.markAsUnscheduledFor(ctx, dangling); err != nil {
 		klog.ErrorS(err, "Failed to mark dangling bindings as unscheduled", "clusterSchedulingPolicySnapshot", policyRef)
 		return ctrl.Result{}, err
 	}
+	observeSchedulingCyclePerStageDurationMetrics("mark-dangling-bindings", float64(time.Since(perStageStartTime).Milliseconds()))
 
 	// Prepare the cycle state for this run.
 	//
 	// Note that this state is shared between all plugins and the scheduler framework itself (though some fields are reserved by
 	// the framework). These reserved fields are never accessed concurrently, as each scheduling run has its own cycle and a run
 	// is always executed in one single goroutine; plugin access to the state is guarded by sync.Map.
+	perStageStartTime = time.Now()
 	state := NewCycleState(clusters, obsolete, bound, scheduled)
+	observeSchedulingCyclePerStageDurationMetrics("prepare-cycle-state", float64(time.Since(perStageStartTime).Milliseconds()))
 
 	switch {
 	case policy.Spec.Policy == nil:
@@ -340,7 +350,8 @@ func (f *framework) collectBindings(ctx context.Context, crpName string) ([]plac
 	bindingList := &placementv1beta1.ClusterResourceBindingList{}
 	labelSelector := labels.SelectorFromSet(labels.Set{placementv1beta1.CRPTrackingLabel: crpName})
 	// List bindings directly from the API server.
-	if err := f.uncachedReader.List(ctx, bindingList, &client.ListOptions{LabelSelector: labelSelector}); err != nil {
+	if err := f.client.List(ctx, bindingList, &client.ListOptions{LabelSelector: labelSelector}); err != nil {
+		//if err := f.uncachedReader.List(ctx, bindingList, &client.ListOptions{LabelSelector: labelSelector}); err != nil {
 		return nil, controller.NewAPIServerError(false, err)
 	}
 	return bindingList.Items, nil
@@ -861,11 +872,13 @@ func (f *framework) runSchedulingCycleForPickNPlacementType(
 	// to identify clusters that already have placements, in accordance with the latest
 	// scheduling policy, on them. Such clusters will not be scored; it will not be included
 	// as a filtered out cluster, either.
+	perStageStartTime := time.Now()
 	scored, filtered, err := f.runAllPluginsForPickNPlacementType(ctx, state, policy, numOfClusters, len(bound)+len(scheduled), clusters)
 	if err != nil {
 		klog.ErrorS(err, "Failed to run all plugins", "clusterSchedulingPolicySnapshot", policyRef)
 		return ctrl.Result{}, err
 	}
+	observeSchedulingCyclePerStageDurationMetrics("run-all-plugins-pickn", float64(time.Since(perStageStartTime).Milliseconds()))
 
 	// Pick the top scored clusters.
 	klog.V(2).InfoS("Picking clusters", "clusterSchedulingPolicySnapshot", policyRef)
@@ -899,18 +912,22 @@ func (f *framework) runSchedulingCycleForPickNPlacementType(
 	//
 	// Fields in the returned bindings are fulfilled and/or refreshed as applicable.
 	klog.V(2).InfoS("Cross-referencing bindings with picked clusters", "clusterSchedulingPolicySnapshot", policyRef)
+	perStageStartTime = time.Now()
 	toCreate, toDelete, toPatch, err := crossReferencePickedClustersAndDeDupBindings(crpName, policy, picked, unscheduled, obsolete)
 	if err != nil {
 		klog.ErrorS(err, "Failed to cross-reference bindings with picked clusters", "clusterSchedulingPolicySnapshot", policyRef)
 		return ctrl.Result{}, err
 	}
+	observeSchedulingCyclePerStageDurationMetrics("cross-reference-bindings-pickn", float64(time.Since(perStageStartTime).Milliseconds()))
 
 	// Manipulate bindings accordingly.
 	klog.V(2).InfoS("Manipulating bindings", "clusterSchedulingPolicySnapshot", policyRef)
+	perStageStartTime = time.Now()
 	if err := f.manipulateBindings(ctx, policy, toCreate, toDelete, toPatch); err != nil {
 		klog.ErrorS(err, "Failed to manipulate bindings", "clusterSchedulingPolicySnapshot", policyRef)
 		return ctrl.Result{}, err
 	}
+	observeSchedulingCyclePerStageDurationMetrics("manipulate-bindings-pickn", float64(time.Since(perStageStartTime).Milliseconds()))
 
 	// Requeue if needed.
 	//
@@ -936,10 +953,12 @@ func (f *framework) runSchedulingCycleForPickNPlacementType(
 
 	// Update policy snapshot status with the latest scheduling decisions and condition.
 	klog.V(2).InfoS("Updating policy snapshot status", "clusterSchedulingPolicySnapshot", policyRef)
+	perStageStartTime = time.Now()
 	if err := f.updatePolicySnapshotStatusFromBindings(ctx, policy, numOfClusters, notPicked, filtered, toCreate, patched, scheduled, bound); err != nil {
 		klog.ErrorS(err, "Failed to update latest scheduling decisions and condition", "clusterSchedulingPolicySnapshot", policyRef)
 		return ctrl.Result{}, err
 	}
+	observeSchedulingCyclePerStageDurationMetrics("update-policy-snapshot-status-pickn", float64(time.Since(perStageStartTime).Milliseconds()))
 
 	// The scheduling cycle has completed.
 	return ctrl.Result{}, nil

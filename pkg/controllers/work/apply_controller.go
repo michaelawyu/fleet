@@ -408,7 +408,8 @@ func (r *ApplyWorkReconciler) applyUnstructured(ctx context.Context, gvr schema.
 			ctx, manifestObj, metav1.CreateOptions{FieldManager: workFieldManagerName})
 		if err == nil {
 			klog.V(2).InfoS("Successfully created the manifest", "gvr", gvr, "manifest", manifestRef)
-			return actual, manifestCreatedAction, nil
+			return actual, manifestNotTrackableAction, nil
+			//return actual, manifestCreatedAction, nil
 		}
 		return nil, errorApplyAction, err
 	}
