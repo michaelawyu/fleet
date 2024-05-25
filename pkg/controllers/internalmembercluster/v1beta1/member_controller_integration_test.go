@@ -2,220 +2,180 @@
 Copyright (c) Microsoft Corporation.
 Licensed under the MIT license.
 */
+
 package v1beta1
 
 import (
-	"context"
-	"strings"
+	"fmt"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	ctrl "sigs.k8s.io/controller-runtime"
 
 	clusterv1beta1 "go.goms.io/fleet/apis/cluster/v1beta1"
-	"go.goms.io/fleet/pkg/controllers/work"
 	"go.goms.io/fleet/pkg/propertyprovider"
-	"go.goms.io/fleet/pkg/utils"
 )
 
-var _ = Describe("Test Internal Member Cluster Controller", Serial, func() {
-	var (
-		ctx                         context.Context
-		HBPeriod                    int
-		memberClusterName           string
-		memberClusterNamespace      string
-		memberClusterNamespacedName types.NamespacedName
-		nodes                       corev1.NodeList
-		r                           *Reconciler
-	)
+const (
+	propertiesManuallyUpdatedConditionType   = "PropertiesManuallyUpdated"
+	propertiesManuallyUpdatedConditionReason = "NewPropertiesPushed"
+	propertiesManuallyUpdatedConditionMsg    = "Properties have been manually updated"
+)
 
-	BeforeEach(func() {
-		ctx = context.Background()
-		HBPeriod = int(utils.RandSecureInt(600))
-		memberClusterName = "rand-" + strings.ToLower(utils.RandStr()) + "-mc"
-		memberClusterNamespace = "fleet-" + memberClusterName
-		memberClusterNamespacedName = types.NamespacedName{
-			Name:      memberClusterName,
-			Namespace: memberClusterNamespace,
-		}
+const (
+	eventuallyTimeout  = time.Second * 30
+	eventuallyInterval = time.Millisecond * 500
+)
 
-		By("create the member cluster namespace")
-		ns := corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: memberClusterNamespace,
-			},
-		}
-		Expect(k8sClient.Create(ctx, &ns)).Should(Succeed())
-
-		By("creating member cluster nodes")
-		nodes = corev1.NodeList{Items: utils.NewTestNodes(memberClusterNamespace)}
-		for _, node := range nodes.Items {
-			node := node // prevent Implicit memory aliasing in for loop
-			Expect(k8sClient.Create(ctx, &node)).Should(Succeed())
-		}
-
-		By("create the internalMemberCluster reconciler")
-		workController := work.NewApplyWorkReconciler(
-			k8sClient, nil, k8sClient, nil, nil, 5, memberClusterNamespace)
-		var err error
-		r, err = NewReconciler(ctx, k8sClient, mgr.GetConfig(), k8sClient, workController, nil)
-		Expect(err).ToNot(HaveOccurred())
-		err = r.SetupWithManager(mgr)
-		Expect(err).ToNot(HaveOccurred())
+var (
+	ignoreTimeFields    = cmpopts.IgnoreTypes(time.Time{})
+	sortConditionByType = cmpopts.SortSlices(func(a, b metav1.Condition) bool {
+		return a.Type < b.Type
 	})
+)
 
-	AfterEach(func() {
-		By("delete member cluster namespace")
-		ns := corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: memberClusterNamespace,
-			},
-		}
-		Expect(k8sClient.Delete(ctx, &ns)).Should(Succeed())
+var _ = Describe("Test InternalMemberCluster Controller", func() {
+	// Note that specs in this context run in serial, however, they might run in parallel with
+	// the other contexts if parallelization is enabled.
+	//
+	// This is safe as the controller managers have been configured to watch only their own
+	// respective namespaces.
+	Context("Test setup with property provider", Ordered, func() {
+		//timeStarted := time.Now()
 
-		By("delete member cluster nodes")
-		for _, node := range nodes.Items {
-			node := node
-			Expect(k8sClient.Delete(ctx, &node)).Should(Succeed())
-		}
-
-		By("delete member cluster")
-		internalMemberCluster := clusterv1beta1.InternalMemberCluster{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      memberClusterName,
-				Namespace: memberClusterNamespace,
-			},
-		}
-		Expect(k8sClient.Delete(ctx, &internalMemberCluster)).Should(SatisfyAny(Succeed(), &utils.NotFoundMatcher{}))
-	})
-
-	Context("join", func() {
-		BeforeEach(func() {
-			internalMemberCluster := clusterv1beta1.InternalMemberCluster{
+		BeforeAll(func() {
+			// Create the InternalMemberCluster object.
+			imc := &clusterv1beta1.InternalMemberCluster{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      memberClusterName,
-					Namespace: memberClusterNamespace,
+					Name:      member1Name,
+					Namespace: member1ReservedNSName,
 				},
 				Spec: clusterv1beta1.InternalMemberClusterSpec{
-					State:                  clusterv1beta1.ClusterStateJoin,
-					HeartbeatPeriodSeconds: int32(HBPeriod),
+					State: clusterv1beta1.ClusterStateJoin,
+					// Use a shorter heartbeat period to improve responsiveness.
+					HeartbeatPeriodSeconds: 2,
 				},
 			}
-			Expect(k8sClient.Create(ctx, &internalMemberCluster)).Should(Succeed())
+			Expect(hubClient.Create(ctx, imc)).Should(Succeed())
+
+			// Report properties via the property provider.
+			propertyProvider1.Update(&propertyprovider.PropertyCollectionResponse{
+				Properties: map[clusterv1beta1.PropertyName]clusterv1beta1.PropertyValue{
+					propertyprovider.NodeCountProperty: {
+						Value:           "1",
+						ObservationTime: metav1.Now(),
+					},
+				},
+				Resources: clusterv1beta1.ResourceUsage{
+					Capacity: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("10"),
+						corev1.ResourceMemory: resource.MustParse("10Gi"),
+					},
+					Allocatable: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("8"),
+						corev1.ResourceMemory: resource.MustParse("8Gi"),
+					},
+					Available: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("2"),
+						corev1.ResourceMemory: resource.MustParse("2Gi"),
+					},
+				},
+				Conditions: []metav1.Condition{
+					{
+						Type:    propertiesManuallyUpdatedConditionType,
+						Status:  metav1.ConditionTrue,
+						Reason:  propertiesManuallyUpdatedConditionReason,
+						Message: propertiesManuallyUpdatedConditionMsg,
+					},
+				},
+			})
 		})
 
-		It("should update internalMemberCluster to joined", func() {
-			result, err := r.Reconcile(ctx, ctrl.Request{
-				NamespacedName: memberClusterNamespacedName,
-			})
-			// take into account the +- jitter
-			upperBoundOfWantRequeueAfter := (1000 + 1000*jitterPercent/2/100) * time.Millisecond.Milliseconds() * int64(HBPeriod)
-			lowerBoundOfWantRequeueAfter := (1000 - 1000*jitterPercent/2/100) * time.Millisecond.Milliseconds() * int64(HBPeriod)
-			Expect(result.RequeueAfter.Milliseconds() <= upperBoundOfWantRequeueAfter).Should(BeTrue(), "Reconcile() RequeueAfter got %v, want <= %v", result.RequeueAfter, upperBoundOfWantRequeueAfter)
-			Expect(result.RequeueAfter.Milliseconds() >= lowerBoundOfWantRequeueAfter).Should(BeTrue(), "Reconcile() RequeueAfter got %v, want >= %v", result.RequeueAfter, lowerBoundOfWantRequeueAfter)
-			Expect(err).Should(Not(HaveOccurred()))
+		It("Should join the cluster", func() {
+			// Verify that the agent status has been updated.
+			Eventually(func() error {
+				imc := &clusterv1beta1.InternalMemberCluster{}
+				objKey := types.NamespacedName{
+					Name:      member1Name,
+					Namespace: member1ReservedNSName,
+				}
+				if err := hubClient.Get(ctx, objKey, imc); err != nil {
+					return fmt.Errorf("failed to get InternalMemberCluster: %w", err)
+				}
 
-			var imc clusterv1beta1.InternalMemberCluster
-			Expect(k8sClient.Get(ctx, memberClusterNamespacedName, &imc)).Should(Succeed())
+				wantIMCStatus := clusterv1beta1.InternalMemberClusterStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:               propertiesManuallyUpdatedConditionType,
+							Status:             metav1.ConditionTrue,
+							Reason:             propertiesManuallyUpdatedConditionReason,
+							Message:            propertiesManuallyUpdatedConditionMsg,
+							ObservedGeneration: imc.Generation,
+						},
+					},
+					Properties: map[clusterv1beta1.PropertyName]clusterv1beta1.PropertyValue{
+						propertyprovider.NodeCountProperty: {
+							Value: "1",
+						},
+					},
+					ResourceUsage: clusterv1beta1.ResourceUsage{
+						Capacity: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("10"),
+							corev1.ResourceMemory: resource.MustParse("10Gi"),
+						},
+						Allocatable: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("8"),
+							corev1.ResourceMemory: resource.MustParse("8Gi"),
+						},
+						Available: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("2"),
+							corev1.ResourceMemory: resource.MustParse("2Gi"),
+						},
+					},
+					AgentStatus: []clusterv1beta1.AgentStatus{
+						{
+							Type: clusterv1beta1.MemberAgent,
+							Conditions: []metav1.Condition{
+								{
+									Type:               string(clusterv1beta1.AgentJoined),
+									Status:             metav1.ConditionTrue,
+									Reason:             EventReasonInternalMemberClusterJoined,
+									ObservedGeneration: imc.Generation,
+								},
+								{
+									Type:               string(clusterv1beta1.AgentHealthy),
+									Status:             metav1.ConditionTrue,
+									Reason:             EventReasonInternalMemberClusterHealthy,
+									ObservedGeneration: imc.Generation,
+								},
+							},
+						},
+					},
+				}
 
-			By("checking updated join condition")
-			updatedJoinedCond := imc.GetConditionWithType(clusterv1beta1.MemberAgent, string(clusterv1beta1.AgentJoined))
-			Expect(updatedJoinedCond.Status).To(Equal(metav1.ConditionTrue))
-			Expect(updatedJoinedCond.Reason).To(Equal(EventReasonInternalMemberClusterJoined))
+				if diff := cmp.Diff(
+					imc.Status, wantIMCStatus,
+					ignoreTimeFields,
+					sortConditionByType,
+				); diff != "" {
+					return fmt.Errorf("InternalMemberCluster status diff (-got, +want):\n%s", diff)
+				}
 
-			By("checking updated heartbeat condition")
-			agentStatus := imc.Status.AgentStatus[0]
-			Expect(agentStatus.LastReceivedHeartbeat).ToNot(Equal(metav1.Now()))
-
-			By("checking updated health condition")
-			updatedHealthCond := imc.GetConditionWithType(clusterv1beta1.MemberAgent, string(clusterv1beta1.AgentHealthy))
-			Expect(updatedHealthCond.Status).To(Equal(metav1.ConditionTrue))
-			Expect(updatedHealthCond.Reason).To(Equal(EventReasonInternalMemberClusterHealthy))
-
-			By("checking updated member cluster usage")
-			Expect(imc.Status.Properties[propertyprovider.NodeCountProperty].Value).ShouldNot(BeEmpty())
-			Expect(imc.Status.ResourceUsage.Allocatable).ShouldNot(BeNil())
-			Expect(imc.Status.ResourceUsage.Capacity).ShouldNot(BeNil())
-			Expect(imc.Status.ResourceUsage.Available).ShouldNot(BeNil())
-			Expect(imc.Status.ResourceUsage.ObservationTime).ToNot(Equal(metav1.Now()))
-		})
-
-		It("last received heart beat gets updated after heartbeat", func() {
-			result, err := r.Reconcile(ctx, ctrl.Request{
-				NamespacedName: memberClusterNamespacedName,
-			})
-			// take into account the +- jitter
-			upperBoundOfWantRequeueAfter := (1000 + 1000*jitterPercent/2/100) * time.Millisecond.Milliseconds() * int64(HBPeriod)
-			lowerBoundOfWantRequeueAfter := (1000 - 1000*jitterPercent/2/100) * time.Millisecond.Milliseconds() * int64(HBPeriod)
-			Expect(result.RequeueAfter.Milliseconds() <= upperBoundOfWantRequeueAfter).Should(BeTrue(), "Reconcile() RequeueAfter got %v, want <= %v", result.RequeueAfter, upperBoundOfWantRequeueAfter)
-			Expect(result.RequeueAfter.Milliseconds() >= lowerBoundOfWantRequeueAfter).Should(BeTrue(), "Reconcile() RequeueAfter got %v, want >= %v", result.RequeueAfter, lowerBoundOfWantRequeueAfter)
-			Expect(err).Should(Not(HaveOccurred()))
-
-			var imc clusterv1beta1.InternalMemberCluster
-			Expect(k8sClient.Get(ctx, memberClusterNamespacedName, &imc)).Should(Succeed())
-
-			memberAgentStatus := imc.GetAgentStatus(clusterv1beta1.MemberAgent)
-			lastReceivedHeartbeat := memberAgentStatus.LastReceivedHeartbeat
-
-			time.Sleep(time.Second)
-
-			By("trigger reconcile which should update last received heart beat time")
-			result, err = r.Reconcile(ctx, ctrl.Request{
-				NamespacedName: memberClusterNamespacedName,
-			})
-			// take into account the +- jitter
-			Expect(result.RequeueAfter.Milliseconds() <= upperBoundOfWantRequeueAfter).Should(BeTrue(), "Reconcile() RequeueAfter got %v, want <= %v", result.RequeueAfter, upperBoundOfWantRequeueAfter)
-			Expect(result.RequeueAfter.Milliseconds() >= lowerBoundOfWantRequeueAfter).Should(BeTrue(), "Reconcile() RequeueAfter got %v, want >= %v", result.RequeueAfter, lowerBoundOfWantRequeueAfter)
-			Expect(err).Should(Not(HaveOccurred()))
-			Expect(k8sClient.Get(ctx, memberClusterNamespacedName, &imc)).Should(Succeed())
-			Expect(lastReceivedHeartbeat).ShouldNot(Equal(imc.Status.AgentStatus[0].LastReceivedHeartbeat))
+				return nil
+			}, eventuallyTimeout, eventuallyInterval).Should(Succeed(), "Failed to update the agent status")
 		})
 	})
 
-	Context("leave", func() {
-		BeforeEach(func() {
-			By("create internalMemberCluster CR")
-			internalMemberCluster := clusterv1beta1.InternalMemberCluster{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      memberClusterName,
-					Namespace: memberClusterNamespace,
-				},
-				Spec: clusterv1beta1.InternalMemberClusterSpec{
-					State:                  clusterv1beta1.ClusterStateLeave,
-					HeartbeatPeriodSeconds: int32(HBPeriod),
-				},
-			}
-			Expect(k8sClient.Create(ctx, &internalMemberCluster)).Should(Succeed())
-
-			By("update internalMemberCluster CR with random usage status")
-			internalMemberCluster.Status = clusterv1beta1.InternalMemberClusterStatus{
-				ResourceUsage: clusterv1beta1.ResourceUsage{
-					Capacity:        utils.NewResourceList(),
-					Allocatable:     utils.NewResourceList(),
-					ObservationTime: metav1.Now(),
-				},
-			}
-			Expect(k8sClient.Status().Update(ctx, &internalMemberCluster)).Should(Succeed())
-		})
-
-		It("should update internalMemberCluster to Left", func() {
-			result, err := r.Reconcile(ctx, ctrl.Request{
-				NamespacedName: memberClusterNamespacedName,
-			})
-			Expect(result).Should(Equal(ctrl.Result{}))
-			Expect(err).Should(Not(HaveOccurred()))
-
-			var internalMemberCluster clusterv1beta1.InternalMemberCluster
-			Expect(k8sClient.Get(ctx, memberClusterNamespacedName, &internalMemberCluster)).Should(Succeed())
-
-			By("checking updated join condition")
-			updatedJoinedCond := internalMemberCluster.GetConditionWithType(clusterv1beta1.MemberAgent, string(clusterv1beta1.AgentJoined))
-			Expect(updatedJoinedCond.Status).Should(Equal(metav1.ConditionFalse))
-			Expect(updatedJoinedCond.Reason).Should(Equal(EventReasonInternalMemberClusterLeft))
-		})
-	})
+	// Note that specs in this context run in serial, however, they might run in parallel with
+	// the other contexts if parallelization is enabled.
+	//
+	// This is safe as the controller managers have been configured to watch only their own
+	// respective namespaces.
+	Context("Test setup with no property provider", Ordered, func() {})
 })
