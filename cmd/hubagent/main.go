@@ -29,13 +29,17 @@ import (
 	fleetnetworkingv1alpha1 "go.goms.io/fleet-networking/api/v1alpha1"
 
 	clusterv1beta1 "go.goms.io/fleet/apis/cluster/v1beta1"
+	clusterinventoryv1alpha1 "go.goms.io/fleet/apis/clusterinventory/v1alpha1"
 	placementv1alpha1 "go.goms.io/fleet/apis/placement/v1alpha1"
 	placementv1beta1 "go.goms.io/fleet/apis/placement/v1beta1"
 	fleetv1alpha1 "go.goms.io/fleet/apis/v1alpha1"
 	"go.goms.io/fleet/cmd/hubagent/options"
 	"go.goms.io/fleet/cmd/hubagent/workload"
+	"go.goms.io/fleet/pkg/clusterinventory/authtokenrequest"
+	"go.goms.io/fleet/pkg/clusterinventory/clusterprofile"
 	mcv1alpha1 "go.goms.io/fleet/pkg/controllers/membercluster/v1alpha1"
 	mcv1beta1 "go.goms.io/fleet/pkg/controllers/membercluster/v1beta1"
+	"go.goms.io/fleet/pkg/kueue"
 	fleetmetrics "go.goms.io/fleet/pkg/metrics"
 	"go.goms.io/fleet/pkg/webhook"
 	// +kubebuilder:scaffold:imports
@@ -67,6 +71,7 @@ func init() {
 	utilruntime.Must(apiextensionsv1.AddToScheme(scheme))
 	utilruntime.Must(fleetnetworkingv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(placementv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(clusterinventoryv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 	klog.InitFlags(nil)
 
@@ -161,6 +166,36 @@ func main() {
 	ctx := ctrl.SetupSignalHandler()
 	if err := workload.SetupControllers(ctx, &wg, mgr, config, opts); err != nil {
 		klog.ErrorS(err, "unable to set up ready check")
+		exitWithErrorFunc()
+	}
+
+	// Set up Cluster Inventory API controllers.
+	//
+	// TO-DO (chenyu1): add CLI arguments for turning on/off these controllers.
+	cpReconciler := clusterprofile.Reconciler{
+		HubClient:               mgr.GetClient(),
+		ClusterProfileNamespace: "fleet-system",
+	}
+	if err := cpReconciler.SetupWithManager(ctx, mgr); err != nil {
+		klog.ErrorS(err, "unable to set up ClusterProfile controller")
+		exitWithErrorFunc()
+	}
+
+	atrReconciler := &authtokenrequest.Reconciler{
+		HubClient:               mgr.GetClient(),
+		ClusterProfileNamespace: "fleet-system",
+	}
+	if err := atrReconciler.SetupWithManager(mgr); err != nil {
+		klog.ErrorS(err, "unable to set up AuthTokenRequest controller")
+		exitWithErrorFunc()
+	}
+
+	// Set up MultiKueue related controllers.
+	jobReconciler := &kueue.Reconciler{
+		HubClient: mgr.GetClient(),
+	}
+	if err := jobReconciler.SetupWithManager(mgr); err != nil {
+		klog.ErrorS(err, "unable to set up Job controller")
 		exitWithErrorFunc()
 	}
 

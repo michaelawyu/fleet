@@ -82,7 +82,7 @@ type Framework interface {
 
 	// RunSchedulingCycleFor performs scheduling for a cluster resource placement, specifically
 	// its associated latest scheduling policy snapshot.
-	RunSchedulingCycleFor(ctx context.Context, crpName string, policy *placementv1beta1.ClusterSchedulingPolicySnapshot) (result ctrl.Result, err error)
+	RunSchedulingCycleFor(ctx context.Context, crpName string, policy *placementv1beta1.ClusterSchedulingPolicySnapshot, isDryRunModeEnabled bool) (result ctrl.Result, err error)
 }
 
 // framework implements the Framework interface.
@@ -231,7 +231,7 @@ func (f *framework) ClusterEligibilityChecker() *clustereligibilitychecker.Clust
 
 // RunSchedulingCycleFor performs scheduling for a cluster resource placement
 // (more specifically, its associated scheduling policy snapshot).
-func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, policy *placementv1beta1.ClusterSchedulingPolicySnapshot) (result ctrl.Result, err error) {
+func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, policy *placementv1beta1.ClusterSchedulingPolicySnapshot, isDryRunModeEnabled bool) (result ctrl.Result, err error) {
 	startTime := time.Now()
 	policyRef := klog.KObj(policy)
 	klog.V(2).InfoS("Scheduling cycle starts", "clusterSchedulingPolicySnapshot", policyRef)
@@ -311,14 +311,14 @@ func (f *framework) RunSchedulingCycleFor(ctx context.Context, crpName string, p
 	case policy.Spec.Policy == nil:
 		// The placement policy is not set; in such cases the policy is considered to be of
 		// the PickAll placement type.
-		return f.runSchedulingCycleForPickAllPlacementType(ctx, state, crpName, policy, clusters, bound, scheduled, unscheduled, obsolete)
+		return f.runSchedulingCycleForPickAllPlacementType(ctx, state, crpName, policy, isDryRunModeEnabled, clusters, bound, scheduled, unscheduled, obsolete)
 	case policy.Spec.Policy.PlacementType == placementv1beta1.PickFixedPlacementType:
 		// The placement policy features a fixed set of clusters to select; in such cases, the
 		// scheduler will bind to these clusters directly.
 		return f.runSchedulingCycleForPickFixedPlacementType(ctx, crpName, policy, clusters, bound, scheduled, unscheduled, obsolete)
 	case policy.Spec.Policy.PlacementType == placementv1beta1.PickAllPlacementType:
 		// Run the scheduling cycle for policy of the PickAll placement type.
-		return f.runSchedulingCycleForPickAllPlacementType(ctx, state, crpName, policy, clusters, bound, scheduled, unscheduled, obsolete)
+		return f.runSchedulingCycleForPickAllPlacementType(ctx, state, crpName, policy, isDryRunModeEnabled, clusters, bound, scheduled, unscheduled, obsolete)
 	case policy.Spec.Policy.PlacementType == placementv1beta1.PickNPlacementType:
 		// Run the scheduling cycle for policy of the PickN placement type.
 		return f.runSchedulingCycleForPickNPlacementType(ctx, state, crpName, policy, clusters, bound, scheduled, unscheduled, obsolete)
@@ -389,6 +389,7 @@ func (f *framework) runSchedulingCycleForPickAllPlacementType(
 	state *CycleState,
 	crpName string,
 	policy *placementv1beta1.ClusterSchedulingPolicySnapshot,
+	isDryRunModeEnabled bool,
 	clusters []clusterv1beta1.MemberCluster,
 	bound, scheduled, unscheduled, obsolete []*placementv1beta1.ClusterResourceBinding,
 ) (result ctrl.Result, err error) {
@@ -435,10 +436,14 @@ func (f *framework) runSchedulingCycleForPickAllPlacementType(
 	}
 
 	// Manipulate bindings accordingly.
-	klog.V(2).InfoS("Manipulating bindings", "clusterSchedulingPolicySnapshot", policyRef)
-	if err := f.manipulateBindings(ctx, policy, toCreate, toDelete, toPatch); err != nil {
-		klog.ErrorS(err, "Failed to manipulate bindings", "clusterSchedulingPolicySnapshot", policyRef)
-		return ctrl.Result{}, err
+	//
+	// If running in dry-run mode, the scheduler will not create, delete, or patch any binding.
+	if !isDryRunModeEnabled {
+		klog.V(2).InfoS("Manipulating bindings", "clusterSchedulingPolicySnapshot", policyRef)
+		if err := f.manipulateBindings(ctx, policy, toCreate, toDelete, toPatch); err != nil {
+			klog.ErrorS(err, "Failed to manipulate bindings", "clusterSchedulingPolicySnapshot", policyRef)
+			return ctrl.Result{}, err
+		}
 	}
 
 	// Extract the patched bindings.

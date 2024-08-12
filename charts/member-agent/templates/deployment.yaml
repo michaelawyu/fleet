@@ -43,6 +43,8 @@ spec:
           env:
           - name: HUB_SERVER_URL
             value: "{{ .Values.config.hubURL }}"
+          - name: MEMBER_SERVER_URL
+            value: "{{ .Values.config.memberURL }}"
           - name: CONFIG_PATH
             value: "/config/token"
           - name: MEMBER_CLUSTER_NAME

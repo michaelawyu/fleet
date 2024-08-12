@@ -359,7 +359,23 @@ func (r *Reconciler) syncRole(ctx context.Context, mc *clusterv1beta1.MemberClus
 			Namespace:       namespaceName,
 			OwnerReferences: []metav1.OwnerReference{*toOwnerReference(mc)},
 		},
-		Rules: []rbacv1.PolicyRule{utils.FleetClusterRule, utils.FleetPlacementRule, utils.FleetNetworkRule, utils.EventRule},
+		Rules: []rbacv1.PolicyRule{
+			utils.FleetClusterRule,
+			utils.FleetPlacementRule,
+			utils.FleetNetworkRule,
+			utils.EventRule,
+			// TO-DO (chenyu1): limit the access further.
+			{
+				APIGroups: []string{"multicluster.x-k8s.io"},
+				Resources: []string{"*"},
+				Verbs:     []string{"*"},
+			},
+			{
+				APIGroups: []string{""},
+				Resources: []string{"configmaps"},
+				Verbs:     []string{"*"},
+			},
+		},
 	}
 
 	// Creates role if not found.

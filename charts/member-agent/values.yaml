@@ -30,6 +30,7 @@ namespace:
 config:
   provider: secret
   hubURL : https://<hub_cluster_api_server_ip>:<hub_cluster_port>
+  memberURL: https://<member_cluster_api_server_ip>:<member_cluster_port>
   memberClusterName: membercluster-sample
   hubCA: <certificate-authority-data>
   identityKey: "identity-key-path"

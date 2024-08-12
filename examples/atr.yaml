@@ -1,0 +1,14 @@
+apiVersion: multicluster.x-k8s.io/v1alpha1
+kind: AuthTokenRequest
+metadata:
+  name: example
+  namespace: work
+spec:
+  targetClusterProfile:
+    apiGroup: multicluster.x-k8s.io/v1alpha1
+    kind: ClusterProfile
+    name: bravelion
+  serviceAccountName: work
+  serviceAccountNamespace: default
+  clusterRoles:
+  - name: cluster-admin

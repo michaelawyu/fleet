@@ -1,0 +1,8 @@
+apiVersion: kueue.x-k8s.io/v1alpha1
+kind: MultiKueueCluster
+metadata:
+  name: bravelion
+spec:
+  kubeConfig:
+    locationType: Secret
+    location: bravelion

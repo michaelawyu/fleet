@@ -39,8 +39,10 @@ import (
 	workv1alpha1 "sigs.k8s.io/work-api/pkg/apis/v1alpha1"
 
 	clusterv1beta1 "go.goms.io/fleet/apis/cluster/v1beta1"
+	clusterinventoryv1alpha1 "go.goms.io/fleet/apis/clusterinventory/v1alpha1"
 	placementv1beta1 "go.goms.io/fleet/apis/placement/v1beta1"
 	fleetv1alpha1 "go.goms.io/fleet/apis/v1alpha1"
+	"go.goms.io/fleet/pkg/clusterinventory/authtokenissuer"
 	imcv1alpha1 "go.goms.io/fleet/pkg/controllers/internalmembercluster/v1alpha1"
 	imcv1beta1 "go.goms.io/fleet/pkg/controllers/internalmembercluster/v1beta1"
 	"go.goms.io/fleet/pkg/controllers/work"
@@ -83,6 +85,7 @@ func init() {
 	utilruntime.Must(workv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(clusterv1beta1.AddToScheme(scheme))
 	utilruntime.Must(placementv1beta1.AddToScheme(scheme))
+	utilruntime.Must(clusterinventoryv1alpha1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 
 	metrics.Registry.MustRegister(fleetmetrics.JoinResultMetrics, fleetmetrics.LeaveResultMetrics, fleetmetrics.WorkApplyTime)
@@ -389,6 +392,25 @@ func Start(ctx context.Context, hubCfg, memberConfig *rest.Config, hubOpts, memb
 		if err := imcReconciler.SetupWithManager(hubMgr); err != nil {
 			klog.ErrorS(err, "Failed to set up InternalMemberCluster v1beta1 controller with the controller manager")
 			return fmt.Errorf("failed to set up InternalMemberCluster v1beta1 controller with the controller manager: %w", err)
+		}
+
+		// Set up Cluster Inventory controllers.
+		iatrReconciler := authtokenissuer.Reconciler{
+			HubClient:                  hubMgr.GetClient(),
+			MemberClient:               memberMgr.GetClient(),
+			MemberClusterName:          os.Getenv("MEMBER_CLUSTER_NAME"),
+			MemberCLusterAPIServerHost: os.Getenv("MEMBER_SERVER_URL"),
+			MemberClusterReservedNS:    fmt.Sprintf(utils.NamespaceNameFormat, os.Getenv("MEMBER_CLUSTER_NAME")),
+			ServiceAccountDefaultNS:    "fleet-system",
+		}
+		klog.InfoS("Setting up AuthTokenIssuer controller",
+			"memberClusterName", iatrReconciler.MemberClusterName,
+			"memberClusterAPIServerHost", iatrReconciler.MemberCLusterAPIServerHost,
+			"memberClusterReservedNS", iatrReconciler.MemberClusterReservedNS,
+			"serviceAccountDefaultNS", iatrReconciler.ServiceAccountDefaultNS)
+		if err := iatrReconciler.SetupWithManager(hubMgr); err != nil {
+			klog.ErrorS(err, "Failed to set up AuthTokenRequest controller with the controller manager")
+			return fmt.Errorf("failed to set up AuthTokenRequest controller with the controller manager: %w", err)
 		}
 	}
 

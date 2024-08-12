@@ -1,0 +1,16 @@
+apiVersion: placement.kubernetes-fleet.io/v1beta1
+kind: ClusterResourcePlacement
+metadata:
+  name: work
+  labels:
+    "kubernetes-fleet.io/scheduling-dry-run": "true"
+spec:
+  resourceSelectors:
+    - group: ""
+      kind: Namespace
+      name: work
+      version: v1
+  policy:
+    placementType: PickAll
+  strategy:
+    type: RollingUpdate

@@ -114,12 +114,12 @@ done
 # Install the hub agent to the hub cluster
 kind export kubeconfig --name $HUB_CLUSTER
 helm install hub-agent ../../charts/hub-agent/ \
-    --set image.pullPolicy=Never \
+    --set image.pullPolicy=Always \
     --set image.repository=$REGISTRY/$HUB_AGENT_IMAGE \
     --set image.tag=$TAG \
     --set namespace=fleet-system \
     --set logVerbosity=5 \
-    --set enableWebhook=true \
+    --set enableWebhook=false \
     --set webhookClientConnectionType=service \
     --set logFileMaxSize=1000000
 
@@ -169,6 +169,7 @@ HUB_SERVER_URL="https://$(docker inspect $HUB_CLUSTER-control-plane --format='{{
 for (( i=0; i<${MEMBER_CLUSTER_COUNT}; i++ ));
 do
     kind export kubeconfig --name "${MEMBER_CLUSTERS[$i]}"
+    MEMBER_SERVER_URL="https://$(docker inspect ${MEMBER_CLUSTERS[$i]}-control-plane --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'):6443"
     if [ "$i" -lt $RESERVED_CLUSTER_COUNT ]; then
         helm install member-agent ../../charts/member-agent/ \
             --set config.hubURL=$HUB_SERVER_URL \
@@ -188,6 +189,7 @@ do
     else
         helm install member-agent ../../charts/member-agent/ \
             --set config.hubURL=$HUB_SERVER_URL \
+            --set config.memberURL=$MEMBER_SERVER_URL \
             --set image.repository=$REGISTRY/$MEMBER_AGENT_IMAGE \
             --set image.tag=$TAG \
             --set refreshtoken.repository=$REGISTRY/$REFRESH_TOKEN_IMAGE \

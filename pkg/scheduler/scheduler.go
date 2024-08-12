@@ -30,6 +30,13 @@ import (
 	"go.goms.io/fleet/pkg/utils/controller"
 )
 
+const (
+	// schedulingDryRunLabel is the label key a user might add to a CRP object to indicate that
+	// the scheduling for the CRP object should be run in dry-run mode, i.e., always produce
+	// new scheduling decisions without creating any binding.
+	schedulingDryRunLabel = "kubernetes-fleet.io/scheduling-dry-run"
+)
+
 // Scheduler is the scheduler for Fleet workloads.
 type Scheduler struct {
 	// name is the name of the scheduler.
@@ -183,12 +190,15 @@ func (s *Scheduler) scheduleOnce(ctx context.Context, worker int) {
 		return
 	}
 
+	// Check if the scheduling cycle should be run in the dry-run mode.
+	_, isDryRunModeEnabled := crp.Labels[schedulingDryRunLabel]
+
 	// Run the scheduling cycle.
 	//
 	// Note that the scheduler will enter this cycle as long as the CRP is active and an active
 	// policy snapshot has been produced.
 	cycleStartTime := time.Now()
-	res, err := s.framework.RunSchedulingCycleFor(ctx, crp.Name, latestPolicySnapshot)
+	res, err := s.framework.RunSchedulingCycleFor(ctx, crp.Name, latestPolicySnapshot, isDryRunModeEnabled)
 	if err != nil {
 		klog.ErrorS(err, "Failed to run scheduling cycle", "clusterResourcePlacement", crpRef)
 		// Requeue for later processing.
