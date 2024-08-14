@@ -9,6 +9,11 @@ helm install kueue ./charts/kueue/ --create-namespace --namespace kueue-system -
 VERSION=v0.5.2 
 kubectl apply --server-side -f https://github.com/kubernetes-sigs/jobset/releases/download/$VERSION/manifests.yaml
 
+kubectl config use-context smartfish-admin
+helm install kueue ./charts/kueue/ --create-namespace --namespace kueue-system --set controllerManager.manager.image.repository=$IMAGE_REPO --set controllerManager.manager.image.tag=$IMAGE_TAG
+VERSION=v0.5.2 
+kubectl apply --server-side -f https://github.com/kubernetes-sigs/jobset/releases/download/$VERSION/manifests.yaml
+
 kubectl config use-context hub-admin
 helm install kueue ./charts/kueue/ --create-namespace --namespace kueue-system --set controllerManager.manager.image.repository=$IMAGE_REPO --set controllerManager.manager.image.tag=$IMAGE_TAG --set featureGates='MultiKueue=true'
 VERSION=v0.5.2
@@ -82,6 +87,20 @@ apiVersion: cluster.kubernetes-fleet.io/v1beta1
 kind: MemberCluster
 metadata:
   name: bravelion
+spec:
+  identity:
+    name: bravelion
+    kind: ServiceAccount
+    namespace: fleet-system
+    apiGroup: ""
+EOF
+
+kubectl config use-context hub-admin
+cat <<EOF | kubectl apply -f -
+apiVersion: cluster.kubernetes-fleet.io/v1beta1
+kind: MemberCluster
+metadata:
+  name: smartfish
 spec:
   identity:
     name: bravelion
