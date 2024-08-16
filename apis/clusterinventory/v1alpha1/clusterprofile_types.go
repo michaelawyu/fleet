@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -85,6 +86,10 @@ type ClusterProfileStatus struct {
 	// and is allowed to be customized by different cluster managers.
 	// +optional
 	Properties []Property `json:"properties,omitempty"`
+
+	// Credentials are the credentials provided by the cluster manager for accessing the cluster.
+	// +optional
+	Credentials []Credential `json:"credentials,omitempty"`
 }
 
 // ClusterVersion represents version information about the cluster.
@@ -115,6 +120,16 @@ type Property struct {
 	// +kubebuilder:validation:MinLength=1
 	// +required
 	Value string `json:"value"`
+}
+
+type Credential struct {
+	// Name is the name of the credential.
+	// +required
+	Name string
+
+	// AccessRef is an object reference to the credential.
+	// +required
+	AccessRef *corev1.ObjectReference
 }
 
 // Predefined healthy conditions indicate the cluster is in a good state or not.

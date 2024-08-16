@@ -537,7 +537,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 		// Retry later to see if the secret has been deleted successfully.
 		return ctrl.Result{RequeueAfter: defaultRetryRequeueAfterPeriod}, nil
-	case err == nil && !shouldRecreateTokenSecret(secret, svcAccount):
+	case err == nil && shouldRecreateTokenSecret(secret, svcAccount):
 		// The secret exists but is not valid.
 		//
 		// It could be that the secret is not of the service account token type or is not linked

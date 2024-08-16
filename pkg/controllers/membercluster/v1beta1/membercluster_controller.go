@@ -31,6 +31,7 @@ import (
 
 	"go.goms.io/fleet/apis"
 	clusterv1beta1 "go.goms.io/fleet/apis/cluster/v1beta1"
+	clusterinventoryv1alpha1 "go.goms.io/fleet/apis/clusterinventory/v1alpha1"
 	placementv1beta1 "go.goms.io/fleet/apis/placement/v1beta1"
 	"go.goms.io/fleet/pkg/metrics"
 	"go.goms.io/fleet/pkg/utils"
@@ -238,6 +239,22 @@ func (r *Reconciler) garbageCollect(ctx context.Context, mc *clusterv1beta1.Memb
 	if err := r.garbageCollectWork(ctx, mc, namespaceName); err != nil {
 		return err
 	}
+	// For simplicity reasons, delete all InternalAuthTokenRequest objects and give the issuer
+	// some time to do the cleanup.
+	iatrList := &clusterinventoryv1alpha1.InternalAuthTokenRequestList{}
+	if err := r.Client.List(ctx, iatrList, client.InNamespace(namespaceName)); err != nil {
+		klog.ErrorS(err, "Failed to list all the internal auth token requests", "memberCluster", klog.KObj(mc))
+		return controller.NewAPIServerError(true, err)
+	}
+	for _, iatr := range iatrList.Items {
+		if err := r.Client.Delete(ctx, &iatr); err != nil {
+			klog.ErrorS(err, "Failed to delete the internal auth token request", "MemberCluster", klog.KObj(mc), "InternalAuthTokenRequest", klog.KObj(&iatr))
+			return controller.NewAPIServerError(true, err)
+		}
+	}
+	// Wait for the issuer to do the cleanup.
+	time.Sleep(5 * time.Second)
+
 	if err := r.Delete(ctx, &clusterNS); err != nil {
 		klog.ErrorS(err, "Failed to remove the cluster namespace", "memberCluster", klog.KObj(mc), "namespace", namespaceName)
 		return controller.NewAPIServerError(false, err)

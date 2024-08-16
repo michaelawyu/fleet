@@ -79,24 +79,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		klog.ErrorS(err, "Failed to get auth token request", "AuthTokenRequest", atrRef)
 	}
 
-	// Validate the target cluster profile.
-	isTargetCPValid, err := r.validateTargetClusterProfileAndReportInStatus(ctx, atr)
-	if err != nil {
-		klog.ErrorS(err, "Failed to validate target cluster profile", "AuthTokenRequest", atrRef)
-		return ctrl.Result{}, err
-	}
-	if !isTargetCPValid {
-		// Report that the target cluster profile is invalid.
-		klog.V(2).InfoS("Target cluster profile is not valid", "AuthTokenRequest", atrRef)
-		if err := r.HubClient.Status().Update(ctx, atr); err != nil {
-			klog.ErrorS(err, "Failed to update auth token request status", "AuthTokenRequest", atrRef)
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
-	}
-
-	// Note that we only process an AuthTokenRequest object if it links to a valid cluster profile,
-	// and the AuthTokenRequest API is designed to be immutable after creation.
+	// Note that AuthTokenRequest API is designed to be immutable after creation.
+	//
+	// It could be that at this stage the AuthTokenRequest is linked to an invalid cluster profile;
+	// should the request is just created, a check will be performed before preparing the
+	// InternalAuthTokenRequest object; on the contrary, if the request has been marked for
+	// deletion, we will always attempt to clean up any leftover InternalAuthTokenRequest object.
 	targetCPName := atr.Spec.TargetClusterProfile.Name
 	targetMCNamespace := fmt.Sprintf(utils.NamespaceNameFormat, targetCPName)
 	iatrName := fmt.Sprintf(internalAuthTokenRequestNameFormat, atr.Namespace, atr.Name)
@@ -115,6 +103,22 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		controllerutil.RemoveFinalizer(atr, internalAuthTokenRequestCleanupFinalizer)
 		if err := r.HubClient.Update(ctx, atr); err != nil {
 			klog.ErrorS(err, "Failed to remove cleanup finalizer", "AuthTokenRequest", atrRef)
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
+
+	// Validate the target cluster profile.
+	isTargetCPValid, err := r.validateTargetClusterProfileAndReportInStatus(ctx, atr)
+	if err != nil {
+		klog.ErrorS(err, "Failed to validate target cluster profile", "AuthTokenRequest", atrRef)
+		return ctrl.Result{}, err
+	}
+	if !isTargetCPValid {
+		// Report that the target cluster profile is invalid.
+		klog.V(2).InfoS("Target cluster profile is not valid", "AuthTokenRequest", atrRef)
+		if err := r.HubClient.Status().Update(ctx, atr); err != nil {
+			klog.ErrorS(err, "Failed to update auth token request status", "AuthTokenRequest", atrRef)
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
@@ -159,6 +163,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			}
 			// Create/update the mirrored config map in the AuthTokenRequest's owner namespace.
 			createOrUpdateRes, err := controllerutil.CreateOrUpdate(ctx, r.HubClient, mirroredConfigMap, func() error {
+				// For simplicity reasons, we will assume that config map with the same name
+				// is always created by this controller.
 				mirroredConfigMap.OwnerReferences = []metav1.OwnerReference{
 					{
 						APIVersion: atr.APIVersion,
@@ -179,12 +185,52 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 					"Operation", createOrUpdateRes)
 				return ctrl.Result{}, err
 			}
+
+			// Update the cluster profile as well to include the credential.
+			cp := &clusterinventoryv1alpha1.ClusterProfile{}
+			if err := r.HubClient.Get(ctx, client.ObjectKey{Namespace: r.ClusterProfileNamespace, Name: targetCPName}, cp); err != nil {
+				klog.ErrorS(err, "Failed to get cluster profile", "ClusterProfile", klog.KRef(r.ClusterProfileNamespace, targetCPName), "AuthTokenRequest", atrRef)
+				return ctrl.Result{}, err
+			}
+			// For simplicity reasons, assume that the credential field in the cluster profile
+			// status is solely under the management of this controller.
+			found := false
+			for idx := range cp.Status.Credentials {
+				cred := &cp.Status.Credentials[idx]
+				if cred.Name == iatr.Name {
+					cred.AccessRef = &corev1.ObjectReference{
+						APIVersion: "v1",
+						Kind:       "ConfigMap",
+						Namespace:  atr.Namespace,
+						Name:       atr.Name,
+					}
+					found = true
+					break
+				}
+			}
+			if !found {
+				cp.Status.Credentials = append(cp.Status.Credentials, clusterinventoryv1alpha1.Credential{
+					Name: iatr.Name,
+					AccessRef: &corev1.ObjectReference{
+						APIVersion: "v1",
+						Kind:       "ConfigMap",
+						Namespace:  atr.Namespace,
+						Name:       atr.Name,
+					},
+				})
+			}
+			if err := r.HubClient.Status().Update(ctx, cp); err != nil {
+				klog.ErrorS(err, "Failed to update cluster profile status to include credential", "ClusterProfile", klog.KObj(cp), "AuthTokenRequest", atrRef)
+				return ctrl.Result{}, err
+			}
 		}
 
 		if err := r.HubClient.Status().Update(ctx, atr); err != nil {
 			klog.ErrorS(err, "Failed to update auth token request status", "AuthTokenRequest", atrRef)
 			return ctrl.Result{}, err
 		}
+		// If the token is not yet ready or will be refreshed, the reconciliation loop will be
+		// triggered again.
 		return ctrl.Result{}, nil
 	case errors.IsNotFound(err):
 		// Create an InternalAuthTokenRequest object.
@@ -203,6 +249,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			klog.ErrorS(err, "Failed to create internal auth token request", "AuthTokenRequest", atrRef, "InternalAuthTokenRequest", klog.KObj(iatr))
 			return ctrl.Result{}, err
 		}
+		// Wait for the InternalAuthTokenRequest object to be processed.
 		return ctrl.Result{}, nil
 	default:
 		// An unexpected error occurred.
@@ -239,9 +286,38 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		}
 	})
 
+	cpEventHandlers := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, a client.Object) []reconcile.Request {
+		cp, ok := a.(*clusterinventoryv1alpha1.ClusterProfile)
+		if !ok {
+			return []reconcile.Request{}
+		}
+
+		// List all the AuthTokenRequest objects and find those that reference the cluster profile.
+		atrList := &clusterinventoryv1alpha1.AuthTokenRequestList{}
+		if err := r.HubClient.List(ctx, atrList); err != nil {
+			klog.ErrorS(err, "Failed to list auth token requests")
+			return []reconcile.Request{}
+		}
+
+		res := make([]reconcile.Request, 0)
+		for idx := range atrList.Items {
+			atr := &atrList.Items[idx]
+			if atr.Spec.TargetClusterProfile.Name == cp.Name {
+				res = append(res, reconcile.Request{
+					NamespacedName: client.ObjectKey{
+						Namespace: atr.Namespace,
+						Name:      atr.Name,
+					},
+				})
+			}
+		}
+		return res
+	})
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&clusterinventoryv1alpha1.AuthTokenRequest{}).
 		Watches(&clusterinventoryv1alpha1.InternalAuthTokenRequest{}, iatrEventHandlers).
+		Watches(&clusterinventoryv1alpha1.ClusterProfile{}, cpEventHandlers).
 		Complete(r)
 }
 

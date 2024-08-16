@@ -22,7 +22,7 @@ import (
 func shouldRecreateTokenSecret(secret *corev1.Secret, svcAccount *corev1.ServiceAccount) bool {
 	if secret.Type != corev1.SecretTypeServiceAccountToken {
 		klog.V(2).InfoS("The secret is not of the service account token type", "Secret", klog.KObj(secret))
-		return false
+		return true
 	}
 
 	svcAccountName, svcAccountRefOK := secret.Annotations[corev1.ServiceAccountNameKey]
@@ -35,13 +35,13 @@ func shouldRecreateTokenSecret(secret *corev1.Secret, svcAccount *corev1.Service
 
 	if !svcAccountRefOK || svcAccountName != svcAccount.Name {
 		klog.V(2).InfoS("The secret is not linked with a service account", "Secret", klog.KObj(secret), "ServiceAccount", klog.KObj(svcAccount))
-		return false
+		return true
 	}
 	if svcAccountUIDOK && svcAccountUID != string(svcAccount.UID) {
 		klog.V(2).InfoS("The secret is linked with a service account of the same name but a different UID", "Secret", klog.KObj(secret), "ServiceAccount", klog.KObj(svcAccount))
-		return false
+		return true
 	}
-	return true
+	return false
 }
 
 // isTokenSecretReadyToUse checks if a token secret is ready to use.

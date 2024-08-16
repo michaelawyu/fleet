@@ -1,0 +1,18 @@
+apiVersion: placement.kubernetes-fleet.io/v1beta1
+kind: ClusterResourcePlacement
+metadata:
+  name: crp-1
+spec:
+  resourceSelectors:
+    - group: ""
+      kind: Namespace
+      name: work
+      version: v1
+  policy:
+    placementType: PickAll
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+      unavailablePeriodSeconds: 10
