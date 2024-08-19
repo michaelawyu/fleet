@@ -234,7 +234,8 @@ spec:
                   rule: self == oldSelf
               serviceAccountNamespace:
                 description: |-
-                  ServiceAccountNamespace is the namespace where the service account is created.
+                  ServiceAccountNamespace is the namespace where the service account is created. This namespace
+                  will be created if it does not already exist.
 
 
                   If left empty, it is up to the token issuer to decide where the service account lives.

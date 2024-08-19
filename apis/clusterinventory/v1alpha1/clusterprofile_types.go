@@ -125,11 +125,11 @@ type Property struct {
 type Credential struct {
 	// Name is the name of the credential.
 	// +required
-	Name string
+	Name string `json:"name"`
 
 	// AccessRef is an object reference to the credential.
 	// +required
-	AccessRef *corev1.ObjectReference
+	AccessRef *corev1.ObjectReference `json:"accessRef"`
 }
 
 // Predefined healthy conditions indicate the cluster is in a good state or not.

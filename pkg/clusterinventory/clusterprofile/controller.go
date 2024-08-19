@@ -187,7 +187,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			ObservedGeneration: cp.Generation,
 			Message:            "The Fleet member agent has lost its heartbeat connection to the Fleet hub cluster",
 		})
-	case mcHealthCond.Status == metav1.ConditionUnknown || mcHealthCond.ObservedGeneration != mc.Generation:
+	//case mcHealthCond.Status == metav1.ConditionUnknown || mcHealthCond.ObservedGeneration != mc.Generation:
+	// Note (chenyu1): Skip the generation check as Fleet member agent currently does not handle
+	// the health condition appropriately.
+	case mcHealthCond.Status == metav1.ConditionUnknown:
 		// The health condition has not been updated.
 		// Set the unknown health condition in the cluster profile status.
 		meta.SetStatusCondition(&cp.Status.Conditions, metav1.Condition{

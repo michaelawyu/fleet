@@ -5,7 +5,6 @@ metadata:
   namespace: default
   labels:
     kueue.x-k8s.io/queue-name: user
-    kubernetes-fleet.io/dry-run-crp-ref: work
 spec:
   parallelism: 1
   completions: 1
@@ -15,7 +14,7 @@ spec:
       containers:
       - name: sleep
         image: gcr.io/k8s-staging-perf-tests/sleep:v0.1.0
-        args: ["30s"]
+        args: ["10s"]
         resources:
           requests:
             cpu: "1"

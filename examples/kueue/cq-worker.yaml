@@ -13,5 +13,3 @@ spec:
         nominalQuota: 100
       - name: "memory"
         nominalQuota: 100Gi
-  admissionChecks:
-  - fleet

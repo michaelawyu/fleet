@@ -99,6 +99,40 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			return ctrl.Result{}, err
 		}
 
+		// Remove any reference to the issued credential in the cluster profile.
+		cp := &clusterinventoryv1alpha1.ClusterProfile{}
+		err := r.HubClient.Get(ctx, client.ObjectKey{Namespace: r.ClusterProfileNamespace, Name: targetCPName}, cp)
+		switch {
+		case err == nil:
+			// Check and remove reference (if any).
+			i := 0
+			found := false
+			for ; i < len(cp.Status.Credentials); i++ {
+				cred := &cp.Status.Credentials[i]
+				if cred.Name == iatrName {
+					found = true
+					break
+				}
+			}
+
+			if !found {
+				break
+			}
+
+			cp.Status.Credentials = append(cp.Status.Credentials[:i], cp.Status.Credentials[i+1:]...)
+
+			if err := r.HubClient.Status().Update(ctx, cp); err != nil {
+				klog.ErrorS(err, "Failed to update cluster profile status to remove credential", "ClusterProfile", klog.KObj(cp), "AuthTokenRequest", atrRef)
+				return ctrl.Result{}, err
+			}
+		case errors.IsNotFound(err):
+			// Pass.
+		default:
+			// An unexpected error has occurred.
+			klog.ErrorS(err, "Failed to get cluster profile", "ClusterProfile", klog.KRef(r.ClusterProfileNamespace, targetCPName), "AuthTokenRequest", atrRef)
+			return ctrl.Result{}, err
+		}
+
 		// Remove the cleanup finalizer from the AuthTokenRequest object.
 		controllerutil.RemoveFinalizer(atr, internalAuthTokenRequestCleanupFinalizer)
 		if err := r.HubClient.Update(ctx, atr); err != nil {
@@ -141,6 +175,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	case err == nil:
 		// Copy back the status to the AuthTokenRequest object.
 		atr.Status = *iatr.Status.DeepCopy()
+		// Clear the token response reference in the status.
+		atr.Status.TokenResponse = corev1.ObjectReference{}
 
 		// Copy back the credential (config map).
 		//
@@ -186,6 +222,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 				return ctrl.Result{}, err
 			}
 
+			// Re-write the token response reference in the status.
+			atr.Status.TokenResponse = corev1.ObjectReference{
+				APIVersion: "v1",
+				Kind:       "ConfigMap",
+				Namespace:  atr.Namespace,
+				Name:       atr.Name,
+				UID:        mirroredConfigMap.UID,
+			}
+
 			// Update the cluster profile as well to include the credential.
 			cp := &clusterinventoryv1alpha1.ClusterProfile{}
 			if err := r.HubClient.Get(ctx, client.ObjectKey{Namespace: r.ClusterProfileNamespace, Name: targetCPName}, cp); err != nil {
@@ -197,7 +242,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			found := false
 			for idx := range cp.Status.Credentials {
 				cred := &cp.Status.Credentials[idx]
-				if cred.Name == iatr.Name {
+				if cred.Name == iatrName {
 					cred.AccessRef = &corev1.ObjectReference{
 						APIVersion: "v1",
 						Kind:       "ConfigMap",
@@ -210,7 +255,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			}
 			if !found {
 				cp.Status.Credentials = append(cp.Status.Credentials, clusterinventoryv1alpha1.Credential{
-					Name: iatr.Name,
+					Name: iatrName,
 					AccessRef: &corev1.ObjectReference{
 						APIVersion: "v1",
 						Kind:       "ConfigMap",

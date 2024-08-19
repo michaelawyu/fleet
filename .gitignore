@@ -34,3 +34,5 @@ ut-coverage.xml
 *~
 
 .vscode/
+
+venv/
