@@ -43,7 +43,7 @@ import (
 	fleetv1alpha1 "go.goms.io/fleet/apis/v1alpha1"
 	imcv1alpha1 "go.goms.io/fleet/pkg/controllers/internalmembercluster/v1alpha1"
 	imcv1beta1 "go.goms.io/fleet/pkg/controllers/internalmembercluster/v1beta1"
-	"go.goms.io/fleet/pkg/controllers/work"
+	"go.goms.io/fleet/pkg/controllers/workapplier"
 	workv1alpha1controller "go.goms.io/fleet/pkg/controllers/workv1alpha1"
 	fleetmetrics "go.goms.io/fleet/pkg/metrics"
 	"go.goms.io/fleet/pkg/propertyprovider"
@@ -349,6 +349,7 @@ func Start(ctx context.Context, hubCfg, memberConfig *rest.Config, hubOpts, memb
 			return err
 		}
 		// create the work controller, so we can pass it to the internal member cluster reconciler
+		/**
 		workController := work.NewApplyWorkReconciler(
 			hubMgr.GetClient(),
 			spokeDynamicClient,
@@ -357,6 +358,21 @@ func Start(ctx context.Context, hubCfg, memberConfig *rest.Config, hubOpts, memb
 
 		if err = workController.SetupWithManager(hubMgr); err != nil {
 			klog.ErrorS(err, "Failed to create v1beta1 controller", "controller", "work")
+			return err
+		}
+		*/
+		workApplier := workapplier.NewReconciler(
+			hubMgr.GetClient(),
+			targetNS,
+			spokeDynamicClient,
+			memberMgr.GetClient(),
+			restMapper,
+			hubMgr.GetEventRecorderFor("work-applier"),
+			5,
+			4,
+		)
+		if err = workApplier.SetupWithManager(hubMgr); err != nil {
+			klog.ErrorS(err, "Failed to create work applier controller", "controller", "workapplier")
 			return err
 		}
 
@@ -383,7 +399,7 @@ func Start(ctx context.Context, hubCfg, memberConfig *rest.Config, hubOpts, memb
 			ctx,
 			hubMgr.GetClient(),
 			memberMgr.GetConfig(), memberMgr.GetClient(),
-			workController,
+			workApplier,
 			pp)
 		if err != nil {
 			klog.ErrorS(err, "Failed to create InternalMemberCluster v1beta1 reconciler")
