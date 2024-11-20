@@ -18,6 +18,7 @@ import (
 	"go.uber.org/atomic"
 	"golang.org/x/sync/errgroup"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -692,7 +693,7 @@ func (r *Reconciler) upsertWork(ctx context.Context, newWork, existingWork *flee
 	} else {
 		// we already checked the label in fetchAllResourceSnapShots function so no need to check again
 		resourceIndex, _ := labels.ExtractResourceIndexFromClusterResourceSnapshot(resourceSnapshot)
-		if workResourceIndex == resourceIndex {
+		if workResourceIndex == resourceIndex && equality.Semantic.DeepEqual(existingWork.Spec.ApplyStrategy, newWork.Spec.ApplyStrategy) {
 			// no need to do anything if the work is generated from the same resource/override snapshots
 			if existingWork.Annotations[fleetv1beta1.ParentResourceOverrideSnapshotHashAnnotation] == newWork.Annotations[fleetv1beta1.ParentResourceOverrideSnapshotHashAnnotation] &&
 				existingWork.Annotations[fleetv1beta1.ParentClusterResourceOverrideSnapshotHashAnnotation] == newWork.Annotations[fleetv1beta1.ParentClusterResourceOverrideSnapshotHashAnnotation] {
