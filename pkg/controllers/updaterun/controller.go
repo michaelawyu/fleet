@@ -28,6 +28,8 @@ import (
 	"go.goms.io/fleet/pkg/utils/controller"
 
 	placementv1alpha1 "go.goms.io/fleet/apis/placement/v1alpha1"
+	"go.goms.io/fleet/pkg/utils"
+	"go.goms.io/fleet/pkg/utils/controller"
 )
 
 // Reconciler reconciles a ClusterStagedUpdateRun object.

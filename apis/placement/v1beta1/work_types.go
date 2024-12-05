@@ -183,6 +183,73 @@ type DiffDetails struct {
 	ObservedDiffs []PatchDetail `json:"observedDiffs,omitempty"`
 }
 
+// DriftDetails describes the observed configuration drifts.
+type DriftDetails struct {
+	// ObservationTime is the timestamp when the drift was last detected.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Format=date-time
+	ObservationTime metav1.Time `json:"observationTime"`
+
+	// ObservedInMemberClusterGeneration is the generation of the applied manifest on the member
+	// cluster side.
+	//
+	// +kubebuilder:validation:Required
+	ObservedInMemberClusterGeneration int64 `json:"observedInMemberClusterGeneration"`
+
+	// FirsftDriftedObservedTime is the timestamp when the drift was first detected.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Format=date-time
+	FirstDriftedObservedTime metav1.Time `json:"firstDriftedObservedTime"`
+
+	// ObservedDrifts describes each drifted field found from the applied manifest.
+	// Fleet might truncate the details as appropriate to control object size.
+	//
+	// Each entry specifies how the live state (the state on the member cluster side) compares
+	// against the desired state (the state kept in the hub cluster manifest).
+	//
+	// +kubebuilder:validation:Optional
+	ObservedDrifts []PatchDetail `json:"observedDrifts,omitempty"`
+}
+
+// DiffDetails describes the observed configuration differences.
+type DiffDetails struct {
+	// ObservationTime is the timestamp when the configuration difference was last detected.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Format=date-time
+	ObservationTime metav1.Time `json:"observationTime"`
+
+	// ObservedInMemberClusterGeneration is the generation of the applied manifest on the member
+	// cluster side.
+	//
+	// +kubebuilder:validation:Required
+	ObservedInMemberClusterGeneration int64 `json:"observedInMemberClusterGeneration"`
+
+	// FirsftDiffedObservedTime is the timestamp when the configuration difference
+	// was first detected.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Format=date-time
+	FirstDiffedObservedTime metav1.Time `json:"firstDiffedObservedTime"`
+
+	// ObservedDiffs describes each field with configuration difference as found from the
+	// member cluster side.
+	//
+	// Fleet might truncate the details as appropriate to control object size.
+	//
+	// Each entry specifies how the live state (the state on the member cluster side) compares
+	// against the desired state (the state kept in the hub cluster manifest).
+	//
+	// +kubebuilder:validation:Optional
+	ObservedDiffs []PatchDetail `json:"observedDiffs,omitempty"`
+}
+
 // ManifestCondition represents the conditions of the resources deployed on
 // spoke cluster.
 type ManifestCondition struct {

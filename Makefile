@@ -148,6 +148,7 @@ integration-test: $(ENVTEST) ## Run tests.
 	export CGO_ENABLED=1 && \
 	export KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) -p path)" && \
 	ginkgo -v -p --race --cover --coverpkg=./pkg/scheduler/... ./test/scheduler && \
+	ginkgo -v -p --race --cover --coverpkg=./... ./test/apis/... && \
 	go test ./test/integration/... -coverpkg=./...  -race -coverprofile=it-coverage.xml -v
 
 ## local tests & e2e tests
@@ -264,7 +265,7 @@ run-memberagent: manifests generate fmt vet ## Run a controllers from your host.
 
 OUTPUT_TYPE ?= type=registry
 BUILDX_BUILDER_NAME ?= img-builder
-QEMU_VERSION ?= 5.2.0-2
+QEMU_VERSION ?= 7.2.0-1
 
 .PHONY: push
 push:
@@ -273,7 +274,7 @@ push:
 .PHONY: docker-buildx-builder
 docker-buildx-builder:
 	@if ! docker buildx ls | grep $(BUILDX_BUILDER_NAME); then \
-		docker run --rm --privileged multiarch/qemu-user-static:$(QEMU_VERSION) --reset -p yes; \
+		docker run --rm --privileged mcr.microsoft.com/mirror/docker/multiarch/qemu-user-static:$(QEMU_VERSION) --reset -p yes; \
 		docker buildx create --name $(BUILDX_BUILDER_NAME) --use; \
 		docker buildx inspect $(BUILDX_BUILDER_NAME) --bootstrap; \
 	fi
