@@ -7,12 +7,6 @@ spec:
     - group: ""
       kind: Namespace
       version: v1
-      labelSelector:
-        matchLabels:
-          app: work
+      name: work
   policy:
     placementType: PickAll
-  strategy:
-    applyStrategy:
-      whenToApply: IfNotDrifted
-      whenToTakeOver: IfNoDiff
