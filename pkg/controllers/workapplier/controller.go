@@ -205,13 +205,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return r.garbageCollectAppliedWork(ctx, work)
 	}
 
-	// set default value so that the following call can skip checking nil
-	// TODO, could be removed once we have the defaulting webhook with fail policy.
-	// Make sure these conditions are met before moving
-	// * the defaulting webhook failure policy is configured as "fail".
-	// * user cannot update/delete the webhook.
-	defaulter.SetDefaultsWork(work)
-
 	// ensure that the appliedWork and the finalizer exist
 	appliedWork, err := r.ensureAppliedWork(ctx, work)
 	if err != nil {
@@ -224,6 +217,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		UID:                appliedWork.GetUID(),
 		BlockOwnerDeletion: ptr.To(false),
 	}
+
+	// Set the default values for the Work object to avoid additional validation logic in the
+	// later steps.
+	defaulter.SetDefaultsWork(work)
 
 	// Note (chenyu1): as of Nov 8, 2024, Fleet has a bug which would assign an identifier with empty
 	// name to an object with generated name; since in earlier versions the identifier struct
@@ -329,7 +326,7 @@ func (r *Reconciler) preProcessManifests(
 	// To avoid conflicts (or the hassle of preparing individual patches), the status update is
 	// done in batch.
 	//
-	// Note that during the write-ahead process, Fleet will also perform a duplication check, which
+	// Note that during the write-ahead process, Fleet will also perform a de-duplication check, which
 	// guarantees that
 	// * for regular objects, no object with the same GVK + namespace/name combo would be processed
 	//   twice;
@@ -353,15 +350,6 @@ func (r *Reconciler) writeAheadManifestProcessingAttempts(
 	work *fleetv1beta1.Work,
 	expectedAppliedWorkOwnerRef *metav1.OwnerReference,
 ) error {
-	// As a shortcut, if there's no spec change in the Work object and the status indicates that
-	// a previous apply attempt has been recorded (**successful or not**), Fleet will skip the write-ahead
-	// op.
-	workAppliedCond := meta.FindStatusCondition(work.Status.Conditions, fleetv1beta1.WorkConditionTypeApplied)
-	if workAppliedCond != nil && workAppliedCond.ObservedGeneration == work.Generation {
-		klog.V(2).InfoS("Fleet has attempted to apply the current set of manifests before and recorded the results; will skip the write-ahead process", "work", klog.KObj(work))
-		return nil
-	}
-
 	// Prepare the status update (the new manifest conditions) for the write-ahead process.
 	//
 	// Note that even though we pre-allocate the slice, the length is set to 0. This is to
@@ -424,6 +412,19 @@ func (r *Reconciler) writeAheadManifestProcessingAttempts(
 		}
 	}
 
+	// As a shortcut, if there's no spec change in the Work object and the status indicates that
+	// a previous apply attempt has been recorded (**successful or not**), Fleet will skip the write-ahead
+	// op.
+	//
+	// Note that the shortcut happens after the manifest conditions for the write-ahead process
+	// are prepared; this is necessary as Fleet needs to track certain information, specifically the
+	// first drifted/diffed timestamps (if any).
+	workAppliedCond := meta.FindStatusCondition(work.Status.Conditions, fleetv1beta1.WorkConditionTypeApplied)
+	if workAppliedCond != nil && workAppliedCond.ObservedGeneration == work.Generation {
+		klog.V(2).InfoS("Fleet has attempted to apply the current set of manifests before and recorded the results; will skip the write-ahead process", "work", klog.KObj(work))
+		return nil
+	}
+
 	// Identify any manifests from previous runs that might have been applied and are now left
 	// over in the member cluster.
 	leftOverManifests := findLeftOverManifests(manifestCondsForWA, existingManifestCondQIdx, work.Status.ManifestConditions)
@@ -446,6 +447,9 @@ func (r *Reconciler) writeAheadManifestProcessingAttempts(
 	if err := r.hubClient.Status().Update(ctx, work); err != nil {
 		return controller.NewAPIServerError(false, fmt.Errorf("failed to write ahead manifest processing attempts: %w", err))
 	}
+
+	// Set the defaults again as the result yielded by the status update might have changed the object.
+	defaulter.SetDefaultsWork(work)
 	return nil
 }
 
@@ -884,11 +888,15 @@ func (r *Reconciler) removeLeftOverManifests(
 			// agent is interrupted untimely during a reconciliation loop, which should be
 			// fairly rare.
 			err = r.removeOneLeftOverManifestWithGenerateName(ctx, appliedManifestMeta, expectedAppliedWorkOwnerRef)
-			errs[pieces] = fmt.Errorf("failed to remove the left-over manifest (object with generated name): %w", err)
+			if err != nil {
+				errs[pieces] = fmt.Errorf("failed to remove the left-over manifest (object with generated name): %w", err)
+			}
 		default:
 			// The object has a regular name; Fleet can look up the object directly.
 			err = r.removeOneLeftOverManifest(ctx, appliedManifestMeta, expectedAppliedWorkOwnerRef)
-			errs[pieces] = fmt.Errorf("failed to remove the left-over manifest (regular object): %w", err)
+			if err != nil {
+				errs[pieces] = fmt.Errorf("failed to remove the left-over manifest (regular object): %w", err)
+			}
 		}
 	}
 	r.parallelizer.ParallelizeUntil(childCtx, len(leftOverManifests), doWork, "removeLeftOverManifests")
