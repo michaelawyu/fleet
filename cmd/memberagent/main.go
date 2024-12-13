@@ -370,6 +370,8 @@ func Start(ctx context.Context, hubCfg, memberConfig *rest.Config, hubOpts, memb
 			hubMgr.GetEventRecorderFor("work-applier"),
 			5,
 			4,
+			time.Second*5,
+			time.Second*15,
 		)
 		if err = workApplier.SetupWithManager(hubMgr); err != nil {
 			klog.ErrorS(err, "Failed to create work applier controller", "controller", "workapplier")
