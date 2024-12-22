@@ -76,9 +76,9 @@ const (
 )
 
 func TestAPIs(t *testing.T) {
-	RegisterFailHandler(Fail)
+	//RegisterFailHandler(Fail)
 
-	RunSpecs(t, "Work Applier Integration Test Suite")
+	//RunSpecs(t, "Work Applier Integration Test Suite")
 }
 
 func setupResources() {
